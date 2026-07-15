@@ -1,0 +1,218 @@
+#!/usr/bin/env python
+"""
+gh-stackx: a thin wrapper around github/gh-stack.
+
+It delegates every command to `gh extension exec stack` except the ones
+blocked or missing in the official extension when GitHub Stacked PRs preview
+is not enabled: submit, sync, merge.
+
+Requires: github/gh-stack installed (`gh extension install github/gh-stack`)
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+GH = "gh"
+GH_STACK = ["gh", "extension", "exec", "stack"]
+
+
+def env():
+    e = os.environ.copy()
+    e["GH_PROMPT_DISABLED"] = "1"
+    e["NO_COLOR"] = "1"
+    e["CLICOLOR"] = "0"
+    return e
+
+
+def run(cmd, check=True, capture=True):
+    proc = subprocess.run(cmd, capture_output=capture, text=True, env=env(), check=False)
+    if check and proc.returncode != 0:
+        if proc.stderr:
+            sys.stderr.write(proc.stderr)
+        if proc.stdout:
+            sys.stdout.write(proc.stdout)
+        sys.exit(proc.returncode)
+    return proc
+
+
+def gh_stack_view_json():
+    proc = run(GH_STACK + ["view", "--json"], check=True)
+    return json.loads(proc.stdout)
+
+
+def gh_pr_view(branch):
+    proc = run([GH, "pr", "view", branch, "--json", "number,state"], check=False)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    try:
+        return json.loads(proc.stdout)
+    except Exception:
+        return None
+
+
+def git_commits_between(base, branch):
+    """Return list of commit subjects (oldest first) on branch since base."""
+    proc = run(["git", "log", "--format=%s", "--reverse", f"{base}..{branch}"], check=False)
+    if proc.returncode != 0:
+        return []
+    return [l for l in proc.stdout.splitlines() if l.strip()]
+
+
+def ensure_gh_stack_installed():
+    proc = run([GH, "extension", "exec", "stack", "--help"], check=False, capture=True)
+    if proc.returncode != 0:
+        sys.stderr.write("github/gh-stack is not installed.\n")
+        sys.stderr.write("Install it first: gh extension install github/gh-stack\n")
+        sys.exit(1)
+
+
+def push_stack(remote=None):
+    args = GH_STACK + ["push"]
+    if remote:
+        args += ["--remote", remote]
+    run(args, capture=False)
+
+
+def pr_title_and_body(branch, base):
+    commits = git_commits_between(base, branch)
+    if not commits:
+        return None, None
+    return commits[0], "\n".join(commits[1:]) if len(commits) > 1 else ""
+
+
+def cmd_submit(args):
+    push_stack(args.remote)
+    stack = gh_stack_view_json()
+    trunk = stack["trunk"]
+    branches = stack.get("branches", [])
+    if not branches:
+        print("No branches in stack.")
+        return
+
+    for i, br in enumerate(branches):
+        base = trunk if i == 0 else branches[i - 1]["name"]
+        title_body = pr_title_and_body(br["name"], base)
+        pr = gh_pr_view(br["name"])
+
+        if pr and pr.get("state") == "OPEN":
+            run([GH, "pr", "edit", str(pr["number"]), "--base", base], capture=False)
+            if args.open:
+                run([GH, "pr", "ready", str(pr["number"])], check=False, capture=False)
+            print(f"Updated PR #{pr['number']} for {br['name']} -> {base}")
+        else:
+            if not title_body or not title_body[0]:
+                print(f"Skipping {br['name']}: no commits to create a PR")
+                continue
+            title, body = title_body
+            draft_args = ["--draft"] if not args.open else []
+            run([GH, "pr", "create", "--base", base, "--head", br["name"],
+                 "--title", title, "--body", body] + draft_args, capture=False)
+            print(f"Created PR for {br['name']} -> {base}")
+
+
+def cmd_sync(args):
+    sync_args = GH_STACK + ["sync"]
+    if args.remote:
+        sync_args += ["--remote", args.remote]
+    run(sync_args, capture=False)
+
+    stack = gh_stack_view_json()
+    trunk = stack["trunk"]
+    branches = stack.get("branches", [])
+    for i, br in enumerate(branches):
+        base = trunk if i == 0 else branches[i - 1]["name"]
+        pr = gh_pr_view(br["name"])
+        if pr and pr.get("state") == "OPEN":
+            run([GH, "pr", "edit", str(pr["number"]), "--base", base], check=False, capture=False)
+
+
+def cmd_merge(args):
+    stack = gh_stack_view_json()
+    branches = stack.get("branches", [])
+    if not branches:
+        print("No stack to merge.")
+        return
+
+    method = []
+    if args.squash:
+        method = ["--squash"]
+    elif args.rebase:
+        method = ["--rebase"]
+    else:
+        method = ["--merge"]
+
+    delete = ["--delete-branch"] if not args.no_delete_branch else []
+    admin = ["--admin"] if args.admin else []
+    auto = ["--auto"] if args.auto else []
+
+    # Merge top-down: each PR merges into its base branch; the lowest one lands on main.
+    for br in reversed(branches):
+        pr = gh_pr_view(br["name"])
+        if not pr:
+            print(f"No open PR for {br['name']}, skipping")
+            continue
+        if pr.get("state") != "OPEN":
+            print(f"PR for {br['name']} is {pr.get('state')}, skipping")
+            continue
+        run([GH, "pr", "merge", str(pr["number"])] + method + delete + admin + auto, capture=False)
+        print(f"Merged PR #{pr['number']} for {br['name']}")
+
+
+def passthrough(args):
+    run(GH_STACK + args, capture=False)
+
+
+def main():
+    ensure_gh_stack_installed()
+
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
+        print("gh stackx: a wrapper around github/gh-stack")
+        print()
+        print("Commands overridden by this extension:")
+        print("  submit       create PRs with gh pr create (works without Stack preview)")
+        print("  sync         run gh stack sync, then fix PR base branches")
+        print("  merge        merge the whole stack top-down")
+        print()
+        print("All other commands are passed to: gh extension exec stack")
+        print()
+        sys.stdout.flush()
+        run([GH, "extension", "exec", "stack", "--help"], capture=False)
+        return
+
+    command = sys.argv[1]
+    rest = sys.argv[2:]
+
+    if command == "submit":
+        parser = argparse.ArgumentParser(prog="gh stackx submit", description="Create/update PRs for the stack.")
+        parser.add_argument("--auto", action="store_true", default=True, help="Use auto-generated titles (default).")
+        parser.add_argument("--open", action="store_true", help="Mark PRs as ready for review.")
+        parser.add_argument("--draft", action="store_true", help="Create PRs as drafts (default without --open).")
+        parser.add_argument("--remote", help="Remote to push to.")
+        args = parser.parse_args(rest)
+        if args.draft:
+            args.open = False
+        cmd_submit(args)
+    elif command == "sync":
+        parser = argparse.ArgumentParser(prog="gh stackx sync", description="Sync the stack and fix PR base branches.")
+        parser.add_argument("--remote", help="Remote to sync with.")
+        args = parser.parse_args(rest)
+        cmd_sync(args)
+    elif command == "merge":
+        parser = argparse.ArgumentParser(prog="gh stackx merge", description="Merge the stack.")
+        parser.add_argument("--merge", action="store_true", help="Use merge commits (default).")
+        parser.add_argument("--squash", action="store_true", help="Use squash merge.")
+        parser.add_argument("--rebase", action="store_true", help="Use rebase merge.")
+        parser.add_argument("--no-delete-branch", action="store_true", help="Do not delete branches after merge.")
+        parser.add_argument("--admin", action="store_true", help="Use admin privileges to merge.")
+        parser.add_argument("--auto", action="store_true", help="Enable auto-merge instead of merging immediately.")
+        args = parser.parse_args(rest)
+        cmd_merge(args)
+    else:
+        passthrough([command] + rest)
+
+
+if __name__ == "__main__":
+    main()
