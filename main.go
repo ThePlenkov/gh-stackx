@@ -25,26 +25,8 @@ func runGh(args ...string) (string, string, error) {
 
 // ghRun runs a gh command and prints its output. It exits on error.
 func ghRun(args ...string) {
-	out, errOut, err := runGh(args...)
-	if out != "" {
-		fmt.Fprint(os.Stdout, out)
-	}
-	if errOut != "" {
-		fmt.Fprint(os.Stderr, errOut)
-	}
-	if err != nil {
+	if err := runGhWithErr(args...); err != nil {
 		os.Exit(1)
-	}
-}
-
-// ghRunIgnore runs a gh command and prints its output, but does not exit on error.
-func ghRunIgnore(args ...string) {
-	out, errOut, _ := runGh(args...)
-	if out != "" {
-		fmt.Fprint(os.Stdout, out)
-	}
-	if errOut != "" {
-		fmt.Fprint(os.Stderr, errOut)
 	}
 }
 
@@ -137,11 +119,11 @@ func ghPrView(branch string) (*PR, error) {
 	return &pr, nil
 }
 
-func gitCommitsBetween(base, branch string) []string {
+func gitCommitsBetween(base, branch string) ([]string, error) {
 	rev := base + ".." + branch
 	out, err := exec.Command("git", "log", "--format=%s", "--reverse", "--end-of-options", rev).Output()
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("git log %s: %w", rev, err)
 	}
 	var commits []string
 	for _, line := range strings.Split(string(out), "\n") {
@@ -149,18 +131,35 @@ func gitCommitsBetween(base, branch string) []string {
 			commits = append(commits, c)
 		}
 	}
-	return commits
+	return commits, nil
 }
 
-func prTitleAndBody(branch, base string) (string, string) {
-	commits := gitCommitsBetween(base, branch)
+func prTitleAndBody(branch, base string) (string, string, error) {
+	commits, err := gitCommitsBetween(base, branch)
+	if err != nil {
+		return "", "", err
+	}
 	if len(commits) == 0 {
-		return "", ""
+		return "", "", nil
 	}
 	if len(commits) == 1 {
-		return commits[0], ""
+		return commits[0], "", nil
 	}
-	return commits[0], strings.Join(commits[1:], "\n")
+	return commits[0], strings.Join(commits[1:], "\n"), nil
+}
+
+func currentRepo() (string, error) {
+	stdout, _, err := gh.Exec("repo", "view", "--json", "nameWithOwner")
+	if err != nil {
+		return "", fmt.Errorf("gh repo view: %w", err)
+	}
+	var repo struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &repo); err != nil {
+		return "", fmt.Errorf("parse repo view: %w", err)
+	}
+	return repo.NameWithOwner, nil
 }
 
 func pushStack(remote string) {
@@ -188,6 +187,12 @@ func cmdSubmit(args []string) {
 	if len(stack.Branches) == 0 {
 		fmt.Println("No branches in stack.")
 		return
+	}
+
+	repo, err := currentRepo()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to determine current repo: %v\n", err)
+		os.Exit(1)
 	}
 
 	errors := 0
@@ -223,9 +228,14 @@ func cmdSubmit(args []string) {
 		case pr != nil:
 			fmt.Printf("PR for %s is %s, skipping\n", br.Name, pr.State)
 		default:
-			createArgs := []string{"pr", "create", "--base", base, "--head", br.Name}
+			createArgs := []string{"pr", "create", "--repo", repo, "--base", base, "--head", br.Name}
 			if *auto {
-				title, body := prTitleAndBody(br.Name, base)
+				title, body, err := prTitleAndBody(br.Name, base)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to read commits for %s: %v\n", br.Name, err)
+					errors++
+					continue
+				}
 				if title == "" {
 					fmt.Printf("Skipping %s: no commits to create a PR\n", br.Name)
 					continue
