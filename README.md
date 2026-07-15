@@ -27,7 +27,7 @@ standard `gh pr` commands, so stacked PRs work without the private preview.
    gh extension install ThePlenkov/gh-stackx
    ```
 
-The extension is a Python script, so Python must be available on your `PATH`.
+The extension is a precompiled Go binary, so `gh` downloads the right executable for your platform (Windows, Linux, macOS, including ARM64).
 
 ## Usage
 
