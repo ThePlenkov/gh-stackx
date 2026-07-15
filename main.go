@@ -60,61 +60,41 @@ type Branch struct {
 }
 
 type Stack struct {
-	Trunk        string   `json:"trunk"`
-	CurrentBranch string  `json:"currentBranch"`
-	Branches     []Branch `json:"branches"`
-}
-
-func ensureGhStack() {
-	if _, errOut, err := runGh("extension", "exec", "stack", "--help"); err != nil {
-		if errOut != "" {
-			fmt.Fprint(os.Stderr, errOut)
-		}
-		fmt.Fprintln(os.Stderr, "github/gh-stack is not installed.")
-		fmt.Fprintln(os.Stderr, "Install it first: gh extension install github/gh-stack")
-		os.Exit(1)
-	}
+	Trunk     string   `json:"trunk"`
+	Current   string   `json:"currentBranch"`
+	Branches  []Branch `json:"branches"`
 }
 
 func ghStackView() Stack {
-	out, errOut, err := runGh("extension", "exec", "stack", "view", "--json")
+	out, _, err := gh.Exec("extension", "exec", "stack", "view", "--json")
 	if err != nil {
-		if errOut != "" {
-			fmt.Fprint(os.Stderr, errOut)
-		}
-		if out != "" {
-			fmt.Fprint(os.Stdout, out)
-		}
+		fmt.Fprintln(os.Stderr, "failed to load stack view:", err)
 		os.Exit(1)
 	}
-	var s Stack
-	if err := json.Unmarshal([]byte(out), &s); err != nil {
-		fmt.Fprintln(os.Stderr, "failed to parse gh stack view --json output:", err)
+	var stack Stack
+	if err := json.Unmarshal(out.Bytes(), &stack); err != nil {
+		fmt.Fprintln(os.Stderr, "failed to parse stack view:", err)
 		os.Exit(1)
 	}
-	return s
+	return stack
 }
 
 func ghPrView(branch string) (*PR, error) {
-	out, errOut, err := runGh("pr", "view", branch, "--json", "number,state,baseRefName,isDraft")
+	out, _, err := gh.Exec("pr", "view", branch, "--json", "number,state,baseRefName,isDraft")
 	if err != nil {
-		if strings.Contains(errOut, "no pull requests found") {
+		// only a missing PR is the nil case; everything else is a real error
+		if strings.Contains(err.Error(), "no pull requests found") || strings.Contains(err.Error(), "No pull requests found") {
 			return nil, nil
-		}
-		if errOut != "" {
-			return nil, fmt.Errorf("%w: %s", err, errOut)
 		}
 		return nil, err
 	}
-	if strings.TrimSpace(out) == "" {
+	outStr := strings.TrimSpace(out.String())
+	if outStr == "" {
 		return nil, nil
 	}
 	var pr PR
-	if err := json.Unmarshal([]byte(out), &pr); err != nil {
-		return nil, fmt.Errorf("failed to parse gh pr view output: %w", err)
-	}
-	if pr.State == "" && pr.Number == 0 {
-		return nil, nil
+	if err := json.Unmarshal(out.Bytes(), &pr); err != nil {
+		return nil, err
 	}
 	return &pr, nil
 }
@@ -148,18 +128,74 @@ func prTitleAndBody(branch, base string) (string, string, error) {
 	return commits[0], strings.Join(commits[1:], "\n"), nil
 }
 
-func currentRepo() (string, error) {
-	stdout, _, err := gh.Exec("repo", "view", "--json", "nameWithOwner")
+func repoInfo() (current, parent string, err error) {
+	stdout, _, err := gh.Exec("repo", "view", "--json", "nameWithOwner,parent")
 	if err != nil {
-		return "", fmt.Errorf("gh repo view: %w", err)
+		return "", "", fmt.Errorf("gh repo view: %w", err)
 	}
-	var repo struct {
+	var result struct {
 		NameWithOwner string `json:"nameWithOwner"`
+		Parent        struct {
+			NameWithOwner string `json:"nameWithOwner"`
+		} `json:"parent"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &repo); err != nil {
-		return "", fmt.Errorf("parse repo view: %w", err)
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		return "", "", fmt.Errorf("parse repo view: %w", err)
 	}
-	return repo.NameWithOwner, nil
+	return result.NameWithOwner, result.Parent.NameWithOwner, nil
+}
+
+func remoteOwner(remote string) (string, error) {
+	if remote == "" {
+		// use origin as the default; otherwise pick the first git remote
+		if out, err := exec.Command("git", "remote").Output(); err == nil {
+			remotes := strings.Fields(string(out))
+			if len(remotes) > 0 {
+				remote = remotes[0]
+			}
+		}
+	}
+	if remote == "" {
+		return "", fmt.Errorf("no git remote configured")
+	}
+	url, err := exec.Command("git", "remote", "get-url", remote).Output()
+	if err != nil {
+		return "", fmt.Errorf("git remote get-url %s: %w", remote, err)
+	}
+	return ownerFromGitURL(strings.TrimSpace(string(url)))
+}
+
+var ownerFromGitURL = func(raw string) (string, error) {
+	// https://github.com/owner/repo.git
+	// ssh://git@github.com/owner/repo.git
+	// git@github.com:owner/repo.git
+	if strings.HasSuffix(raw, ".git") {
+		raw = raw[:len(raw)-4]
+	}
+	if i := strings.Index(raw, "://"); i != -1 {
+		raw = raw[i+3:]
+	}
+	if i := strings.Index(raw, "@"); i != -1 {
+		raw = raw[i+1:]
+	}
+	parts := strings.Split(raw, "/")
+	if len(parts) >= 2 {
+		if strings.Contains(parts[0], ":") {
+			parts[0] = strings.Split(parts[0], ":")[0]
+		}
+		return parts[len(parts)-2], nil
+	}
+	return "", fmt.Errorf("could not parse remote url: %s", raw)
+}
+
+func ensurePRBase(pr *PR, br Branch, base string) error {
+	if pr == nil || pr.State != "OPEN" {
+		return nil
+	}
+	if pr.BaseRefName == base {
+		return nil
+	}
+	return runGhWithErr("pr", "edit", strconv.Itoa(pr.Number), "--base", base)
 }
 
 func pushStack(remote string) {
@@ -189,9 +225,18 @@ func cmdSubmit(args []string) {
 		return
 	}
 
-	repo, err := currentRepo()
+	current, parent, err := repoInfo()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to determine current repo: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to determine repo info: %v\n", err)
+		os.Exit(1)
+	}
+	baseRepo := current
+	if parent != "" {
+		baseRepo = parent
+	}
+	headOwner, err := remoteOwner(*remote)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to resolve remote owner: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -210,12 +255,10 @@ func cmdSubmit(args []string) {
 
 		switch {
 		case pr != nil && pr.State == "OPEN":
-			if pr.BaseRefName != base {
-				if err := runGhWithErr("pr", "edit", strconv.Itoa(pr.Number), "--base", base); err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to update PR for %s: %v\n", br.Name, err)
-					errors++
-					continue
-				}
+			if err := ensurePRBase(pr, br, base); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to update PR for %s: %v\n", br.Name, err)
+				errors++
+				continue
 			}
 			if *open && pr.IsDraft {
 				if err := runGhWithErr("pr", "ready", strconv.Itoa(pr.Number)); err != nil {
@@ -228,7 +271,11 @@ func cmdSubmit(args []string) {
 		case pr != nil:
 			fmt.Printf("PR for %s is %s, skipping\n", br.Name, pr.State)
 		default:
-			createArgs := []string{"pr", "create", "--repo", repo, "--base", base, "--head", br.Name}
+			head := br.Name
+			if headOwner != "" {
+				head = headOwner + ":" + br.Name
+			}
+			createArgs := []string{"pr", "create", "--repo", baseRepo, "--base", base, "--head", head}
 			if *auto {
 				title, body, err := prTitleAndBody(br.Name, base)
 				if err != nil {
@@ -286,12 +333,10 @@ func cmdSync(args []string) {
 			errors++
 			continue
 		}
-		if pr != nil && pr.State == "OPEN" && pr.BaseRefName != base {
-			if err := runGhWithErr("pr", "edit", strconv.Itoa(pr.Number), "--base", base); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to update PR for %s: %v\n", br.Name, err)
-				errors++
-				continue
-			}
+		if err := ensurePRBase(pr, br, base); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to update PR for %s: %v\n", br.Name, err)
+			errors++
+			continue
 		}
 	}
 
@@ -382,33 +427,26 @@ func passthrough(args []string) {
 }
 
 func main() {
-	ensureGhStack()
-
-	if len(os.Args) < 2 || os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help" {
-		fmt.Println("gh stackx: a wrapper around github/gh-stack")
-		fmt.Println()
-		fmt.Println("Commands overridden by this extension:")
-		fmt.Println("  submit       create PRs with gh pr create (works without Stack preview)")
-		fmt.Println("  sync         run gh stack sync, then fix PR base branches")
-		fmt.Println("  merge        merge the whole stack top-down")
-		fmt.Println()
-		fmt.Println("All other commands are passed to: gh extension exec stack")
-		fmt.Println()
-		ghRun("extension", "exec", "stack", "--help")
+	if len(os.Args) < 2 {
+		ghRun("extension", "exec", "stack")
 		return
 	}
 
-	command := os.Args[1]
-	rest := os.Args[2:]
-
-	switch command {
+	switch os.Args[1] {
 	case "submit":
-		cmdSubmit(rest)
+		cmdSubmit(os.Args[2:])
 	case "sync":
-		cmdSync(rest)
+		cmdSync(os.Args[2:])
 	case "merge":
-		cmdMerge(rest)
+		cmdMerge(os.Args[2:])
+	case "view", "version", "--version", "-v":
+		passthrough(os.Args[1:])
 	default:
-		passthrough(append([]string{command}, rest...))
+		if strings.HasPrefix(os.Args[1], "-") {
+			passthrough(os.Args[1:])
+		} else {
+			fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
+			os.Exit(1)
+		}
 	}
 }
