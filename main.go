@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -20,7 +19,6 @@ func init() {
 }
 
 func runGh(args ...string) (string, string, error) {
-	var stdout, stderr bytes.Buffer
 	stdout, stderr, err := gh.Exec(args...)
 	return stdout.String(), stderr.String(), err
 }
@@ -117,7 +115,8 @@ func ghPrView(branch string) *PR {
 }
 
 func gitCommitsBetween(base, branch string) []string {
-	out, err := exec.Command("git", "log", "--format=%s", "--reverse", base+".."+branch).Output()
+	rev := base + ".." + branch
+	out, err := exec.Command("git", "log", "--format=%s", "--reverse", "--end-of-options", rev).Output()
 	if err != nil {
 		return nil
 	}
