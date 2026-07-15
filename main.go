@@ -48,6 +48,18 @@ func ghRunIgnore(args ...string) {
 	}
 }
 
+// runGhWithErr runs a gh command, prints its output, and returns any error.
+func runGhWithErr(args ...string) error {
+	out, errOut, err := runGh(args...)
+	if out != "" {
+		fmt.Fprint(os.Stdout, out)
+	}
+	if errOut != "" {
+		fmt.Fprint(os.Stderr, errOut)
+	}
+	return err
+}
+
 type PR struct {
 	Number int    `json:"number"`
 	State  string `json:"state"`
@@ -150,7 +162,7 @@ func pushStack(remote string) {
 
 func cmdSubmit(args []string) {
 	fs := pflag.NewFlagSet("submit", pflag.ExitOnError)
-	_ = fs.Bool("auto", true, "Use auto-generated titles (default).")
+	auto := fs.Bool("auto", true, "Use auto-generated titles (default).")
 	open := fs.Bool("open", false, "Mark PRs as ready for review.")
 	draft := fs.Bool("draft", false, "Create PRs as drafts (default without --open).")
 	remote := fs.String("remote", "", "Remote to push to.")
@@ -167,6 +179,7 @@ func cmdSubmit(args []string) {
 		return
 	}
 
+	errors := 0
 	for i, br := range stack.Branches {
 		base := stack.Trunk
 		if i > 0 {
@@ -174,25 +187,46 @@ func cmdSubmit(args []string) {
 		}
 		pr := ghPrView(br.Name)
 
-		if pr != nil && pr.State == "OPEN" {
-			ghRun("pr", "edit", strconv.Itoa(pr.Number), "--base", base)
+		switch {
+		case pr != nil && pr.State == "OPEN":
+			if err := runGhWithErr("pr", "edit", strconv.Itoa(pr.Number), "--base", base); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to update PR for %s: %v\n", br.Name, err)
+				errors++
+				continue
+			}
 			if *open {
 				ghRunIgnore("pr", "ready", strconv.Itoa(pr.Number))
 			}
 			fmt.Printf("Updated PR #%d for %s -> %s\n", pr.Number, br.Name, base)
-		} else {
-			title, body := prTitleAndBody(br.Name, base)
-			if title == "" {
-				fmt.Printf("Skipping %s: no commits to create a PR\n", br.Name)
-				continue
+		case pr != nil:
+			fmt.Printf("PR for %s is %s, skipping\n", br.Name, pr.State)
+		default:
+			createArgs := []string{"pr", "create", "--base", base, "--head", br.Name}
+			if *auto {
+				title, body := prTitleAndBody(br.Name, base)
+				if title == "" {
+					fmt.Printf("Skipping %s: no commits to create a PR\n", br.Name)
+					continue
+				}
+				createArgs = append(createArgs, "--title", title, "--body", body)
+			} else {
+				createArgs = append(createArgs, "--fill")
 			}
-			createArgs := []string{"pr", "create", "--base", base, "--head", br.Name, "--title", title, "--body", body}
 			if !*open {
 				createArgs = append(createArgs, "--draft")
 			}
-			ghRun(createArgs...)
+			if err := runGhWithErr(createArgs...); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to create PR for %s: %v\n", br.Name, err)
+				errors++
+				continue
+			}
 			fmt.Printf("Created PR for %s -> %s\n", br.Name, base)
 		}
+	}
+
+	if errors > 0 {
+		fmt.Fprintf(os.Stderr, "submit finished with %d error(s)\n", errors)
+		os.Exit(1)
 	}
 }
 
@@ -222,7 +256,6 @@ func cmdSync(args []string) {
 
 func cmdMerge(args []string) {
 	fs := pflag.NewFlagSet("merge", pflag.ExitOnError)
-	fs.Bool("merge", false, "Use merge commits (default).")
 	squash := fs.Bool("squash", false, "Use squash merge.")
 	rebase := fs.Bool("rebase", false, "Use rebase merge.")
 	noDelete := fs.Bool("no-delete-branch", false, "Do not delete branches after merge.")
@@ -236,11 +269,13 @@ func cmdMerge(args []string) {
 		return
 	}
 
-	method := []string{"--merge"}
+	var method []string
 	if *squash {
 		method = []string{"--squash"}
 	} else if *rebase {
 		method = []string{"--rebase"}
+	} else {
+		method = []string{"--merge"}
 	}
 
 	var deleteFlag, adminFlag, autoFlag []string
