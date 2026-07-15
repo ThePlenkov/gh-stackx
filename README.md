@@ -86,10 +86,12 @@ You need Go 1.23 or later to build from source:
 
 ```bash
 cd gh-stackx
-go build -o gh-stackx.exe
+go build
 gh extension install .
 gh stackx --help
 ```
+
+On Windows, `go build` produces `gh-stackx.exe`; on Linux and macOS it produces `gh-stackx`.
 
 ## License
 
