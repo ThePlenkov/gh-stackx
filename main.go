@@ -80,10 +80,11 @@ func ghStackView() Stack {
 }
 
 func ghPrView(branch string) (*PR, error) {
-	out, _, err := gh.Exec("pr", "view", branch, "--json", "number,state,baseRefName,isDraft")
+	out, errOut, err := gh.Exec("pr", "view", branch, "--json", "number,state,baseRefName,isDraft")
 	if err != nil {
 		// only a missing PR is the nil case; everything else is a real error
-		if strings.Contains(err.Error(), "no pull requests found") || strings.Contains(err.Error(), "No pull requests found") {
+		errText := strings.ToLower(errOut.String())
+		if strings.Contains(errText, "no pull requests found") {
 			return nil, nil
 		}
 		return nil, err
@@ -165,7 +166,7 @@ func remoteOwner(remote string) (string, error) {
 	return ownerFromGitURL(strings.TrimSpace(string(url)))
 }
 
-var ownerFromGitURL = func(raw string) (string, error) {
+func ownerFromGitURL(raw string) (string, error) {
 	// https://github.com/owner/repo.git
 	// ssh://git@github.com/owner/repo.git
 	// git@github.com:owner/repo.git
@@ -178,17 +179,24 @@ var ownerFromGitURL = func(raw string) (string, error) {
 	if i := strings.Index(raw, "@"); i != -1 {
 		raw = raw[i+1:]
 	}
+	// scp-style git@host:owner/repo -> host/owner/repo
+	if i := strings.Index(raw, ":"); i != -1 {
+		raw = raw[:i] + "/" + raw[i+1:]
+	}
 	parts := strings.Split(raw, "/")
-	if len(parts) >= 2 {
-		if strings.Contains(parts[0], ":") {
-			parts[0] = strings.Split(parts[0], ":")[0]
+	var clean []string
+	for _, p := range parts {
+		if p != "" {
+			clean = append(clean, p)
 		}
-		return parts[len(parts)-2], nil
+	}
+	if len(clean) >= 2 {
+		return clean[len(clean)-2], nil
 	}
 	return "", fmt.Errorf("could not parse remote url: %s", raw)
 }
 
-func ensurePRBase(pr *PR, br Branch, base string) error {
+func ensurePRBase(pr *PR, base string) error {
 	if pr == nil || pr.State != "OPEN" {
 		return nil
 	}
@@ -255,7 +263,7 @@ func cmdSubmit(args []string) {
 
 		switch {
 		case pr != nil && pr.State == "OPEN":
-			if err := ensurePRBase(pr, br, base); err != nil {
+			if err := ensurePRBase(pr, base); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to update PR for %s: %v\n", br.Name, err)
 				errors++
 				continue
@@ -333,7 +341,7 @@ func cmdSync(args []string) {
 			errors++
 			continue
 		}
-		if err := ensurePRBase(pr, br, base); err != nil {
+		if err := ensurePRBase(pr, base); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to update PR for %s: %v\n", br.Name, err)
 			errors++
 			continue
@@ -442,11 +450,6 @@ func main() {
 	case "view", "version", "--version", "-v":
 		passthrough(os.Args[1:])
 	default:
-		if strings.HasPrefix(os.Args[1], "-") {
-			passthrough(os.Args[1:])
-		} else {
-			fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
-			os.Exit(1)
-		}
+		passthrough(os.Args[1:])
 	}
 }
