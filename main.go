@@ -148,10 +148,16 @@ func repoInfo() (current, parent string, err error) {
 
 func remoteOwner(remote string) (string, error) {
 	if remote == "" {
-		// use origin as the default; otherwise pick the first git remote
+		// prefer origin; otherwise pick the first git remote
 		if out, err := exec.Command("git", "remote").Output(); err == nil {
 			remotes := strings.Fields(string(out))
-			if len(remotes) > 0 {
+			for _, r := range remotes {
+				if r == "origin" {
+					remote = r
+					break
+				}
+			}
+			if remote == "" && len(remotes) > 0 {
 				remote = remotes[0]
 			}
 		}
@@ -242,10 +248,15 @@ func cmdSubmit(args []string) {
 	if parent != "" {
 		baseRepo = parent
 	}
+	baseOwner := baseRepo
+	if i := strings.Index(baseRepo, "/"); i != -1 {
+		baseOwner = baseRepo[:i]
+	}
 	headOwner, err := remoteOwner(*remote)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to resolve remote owner: %v\n", err)
-		os.Exit(1)
+		// no remote configured or unparsable; let gh pr create infer from repo
+		fmt.Fprintf(os.Stderr, "warning: could not resolve remote owner: %v\n", err)
+		headOwner = ""
 	}
 
 	errors := 0
@@ -280,7 +291,7 @@ func cmdSubmit(args []string) {
 			fmt.Printf("PR for %s is %s, skipping\n", br.Name, pr.State)
 		default:
 			head := br.Name
-			if headOwner != "" {
+			if headOwner != "" && headOwner != baseOwner {
 				head = headOwner + ":" + br.Name
 			}
 			createArgs := []string{"pr", "create", "--repo", baseRepo, "--base", base, "--head", head}
