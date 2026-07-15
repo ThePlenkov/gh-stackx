@@ -82,8 +82,11 @@ gh stackx merge --rebase
 
 ## Development
 
+You need Go 1.23 or later to build from source:
+
 ```bash
 cd gh-stackx
+go build -o gh-stackx.exe
 gh extension install .
 gh stackx --help
 ```

@@ -61,8 +61,10 @@ func runGhWithErr(args ...string) error {
 }
 
 type PR struct {
-	Number int    `json:"number"`
-	State  string `json:"state"`
+	Number      int    `json:"number"`
+	State       string `json:"state"`
+	BaseRefName string `json:"baseRefName"`
+	IsDraft     bool   `json:"isDraft"`
 }
 
 type Branch struct {
@@ -111,19 +113,28 @@ func ghStackView() Stack {
 	return s
 }
 
-func ghPrView(branch string) *PR {
-	out, _, err := runGh("pr", "view", branch, "--json", "number,state")
-	if err != nil || strings.TrimSpace(out) == "" {
-		return nil
+func ghPrView(branch string) (*PR, error) {
+	out, errOut, err := runGh("pr", "view", branch, "--json", "number,state,baseRefName,isDraft")
+	if err != nil {
+		if strings.Contains(errOut, "no pull requests found") {
+			return nil, nil
+		}
+		if errOut != "" {
+			return nil, fmt.Errorf("%w: %s", err, errOut)
+		}
+		return nil, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, nil
 	}
 	var pr PR
 	if err := json.Unmarshal([]byte(out), &pr); err != nil {
-		return nil
+		return nil, fmt.Errorf("failed to parse gh pr view output: %w", err)
 	}
 	if pr.State == "" && pr.Number == 0 {
-		return nil
+		return nil, nil
 	}
-	return &pr
+	return &pr, nil
 }
 
 func gitCommitsBetween(base, branch string) []string {
@@ -185,17 +196,28 @@ func cmdSubmit(args []string) {
 		if i > 0 {
 			base = stack.Branches[i-1].Name
 		}
-		pr := ghPrView(br.Name)
+		pr, err := ghPrView(br.Name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to look up PR for %s: %v\n", br.Name, err)
+			errors++
+			continue
+		}
 
 		switch {
 		case pr != nil && pr.State == "OPEN":
-			if err := runGhWithErr("pr", "edit", strconv.Itoa(pr.Number), "--base", base); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to update PR for %s: %v\n", br.Name, err)
-				errors++
-				continue
+			if pr.BaseRefName != base {
+				if err := runGhWithErr("pr", "edit", strconv.Itoa(pr.Number), "--base", base); err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to update PR for %s: %v\n", br.Name, err)
+					errors++
+					continue
+				}
 			}
-			if *open {
-				ghRunIgnore("pr", "ready", strconv.Itoa(pr.Number))
+			if *open && pr.IsDraft {
+				if err := runGhWithErr("pr", "ready", strconv.Itoa(pr.Number)); err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to mark PR for %s as ready: %v\n", br.Name, err)
+					errors++
+					continue
+				}
 			}
 			fmt.Printf("Updated PR #%d for %s -> %s\n", pr.Number, br.Name, base)
 		case pr != nil:
@@ -242,15 +264,30 @@ func cmdSync(args []string) {
 	ghRun(syncArgs...)
 
 	stack := ghStackView()
+	errors := 0
 	for i, br := range stack.Branches {
 		base := stack.Trunk
 		if i > 0 {
 			base = stack.Branches[i-1].Name
 		}
-		pr := ghPrView(br.Name)
-		if pr != nil && pr.State == "OPEN" {
-			ghRunIgnore("pr", "edit", strconv.Itoa(pr.Number), "--base", base)
+		pr, err := ghPrView(br.Name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to look up PR for %s: %v\n", br.Name, err)
+			errors++
+			continue
 		}
+		if pr != nil && pr.State == "OPEN" && pr.BaseRefName != base {
+			if err := runGhWithErr("pr", "edit", strconv.Itoa(pr.Number), "--base", base); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to update PR for %s: %v\n", br.Name, err)
+				errors++
+				continue
+			}
+		}
+	}
+
+	if errors > 0 {
+		fmt.Fprintf(os.Stderr, "sync finished with %d error(s)\n", errors)
+		os.Exit(1)
 	}
 }
 
@@ -262,6 +299,11 @@ func cmdMerge(args []string) {
 	admin := fs.Bool("admin", false, "Use admin privileges to merge.")
 	auto := fs.Bool("auto", false, "Enable auto-merge instead of merging immediately.")
 	fs.Parse(args)
+
+	if *squash && *rebase {
+		fmt.Fprintln(os.Stderr, "error: --squash and --rebase are mutually exclusive")
+		os.Exit(1)
+	}
 
 	stack := ghStackView()
 	if len(stack.Branches) == 0 {
@@ -289,9 +331,15 @@ func cmdMerge(args []string) {
 		autoFlag = []string{"--auto"}
 	}
 
+	errors := 0
 	for i := len(stack.Branches) - 1; i >= 0; i-- {
 		br := stack.Branches[i]
-		pr := ghPrView(br.Name)
+		pr, err := ghPrView(br.Name)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to look up PR for %s: %v\n", br.Name, err)
+			errors++
+			continue
+		}
 		if pr == nil {
 			fmt.Printf("No open PR for %s, skipping\n", br.Name)
 			continue
@@ -305,8 +353,17 @@ func cmdMerge(args []string) {
 		mergeArgs = append(mergeArgs, deleteFlag...)
 		mergeArgs = append(mergeArgs, adminFlag...)
 		mergeArgs = append(mergeArgs, autoFlag...)
-		ghRun(mergeArgs...)
+		if err := runGhWithErr(mergeArgs...); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to merge PR for %s: %v\n", br.Name, err)
+			errors++
+			continue
+		}
 		fmt.Printf("Merged PR #%d for %s\n", pr.Number, br.Name)
+	}
+
+	if errors > 0 {
+		fmt.Fprintf(os.Stderr, "merge finished with %d error(s)\n", errors)
+		os.Exit(1)
 	}
 }
 
