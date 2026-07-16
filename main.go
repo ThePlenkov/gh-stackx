@@ -94,8 +94,9 @@ func ghStackView() Stack {
 	return stack
 }
 
-func ghPrView(branch string) (*PR, error) {
-	out, errOut, err := gh.Exec("pr", "view", branch, "--json", "number,state,baseRefName,isDraft")
+func ghPrView(branch, repo string) (*PR, error) {
+	args := []string{"pr", "view", branch, "--repo", repo, "--json", "number,state,baseRefName,isDraft"}
+	out, errOut, err := gh.Exec(args...)
 	if err != nil {
 		// only a missing PR is the nil case; everything else is a real error
 		errText := strings.ToLower(errOut.String())
@@ -217,7 +218,7 @@ func splitScpHostPath(s string) (host, path string, ok bool) {
 	return s, "", false
 }
 
-// parseGitRemote parses a git remote URL into host (including port), owner, and repo.
+// parseGitRemote parses a git remote URL into host (port-stripped for comparison), owner, and repo.
 // It validates owner/repo are safe GitHub slugs and returns an error for local paths.
 func parseGitRemote(raw string) (host, owner, repo string, err error) {
 	raw = strings.TrimSpace(raw)
@@ -246,7 +247,7 @@ func parseGitRemote(raw string) (host, owner, repo string, err error) {
 	if parseErr != nil || u.Host == "" {
 		return "", "", "", fmt.Errorf("could not parse remote URL")
 	}
-	host = u.Host
+	host = u.Hostname()
 	path := strings.Trim(u.Path, "/")
 	parts := strings.Split(path, "/")
 	var clean []string
@@ -282,14 +283,14 @@ func isOrgOwner(owner string) (bool, error) {
 	return false, fmt.Errorf("gh api users/%s: %w", owner, err)
 }
 
-func ensurePRBase(pr *PR, base string) error {
+func ensurePRBase(pr *PR, base, repo string) error {
 	if pr == nil || pr.State != "OPEN" {
 		return nil
 	}
 	if pr.BaseRefName == base {
 		return nil
 	}
-	return runGhWithErr("pr", "edit", strconv.Itoa(pr.Number), "--base", base)
+	return runGhWithErr("pr", "edit", strconv.Itoa(pr.Number), "--repo", repo, "--base", base)
 }
 
 func pushStack(remote string) {
@@ -324,16 +325,6 @@ func cmdSubmit(args []string) {
 		fmt.Fprintf(os.Stderr, "Failed to determine repo info: %v\n", err)
 		os.Exit(1)
 	}
-	baseRepo := current
-	baseHost := currentHost
-	if parent != "" {
-		baseRepo = parent
-		baseHost = parentHost
-	}
-	baseOwner := baseRepo
-	if i := strings.Index(baseRepo, "/"); i != -1 {
-		baseOwner = baseRepo[:i]
-	}
 	headHost, headOwner, headRepoName, err := remoteInfo(*remote)
 	if err != nil {
 		// no remote configured or unparsable; let gh pr create infer from repo
@@ -347,37 +338,21 @@ func cmdSubmit(args []string) {
 		headRepo = headOwner + "/" + headRepoName
 	}
 
-	crossRepo := headRepo != "" && !strings.EqualFold(headRepo, baseRepo)
-	useAPICross := false
-	if crossRepo {
-		switch {
-		case headHost == "" || baseHost == "":
-			fmt.Fprintf(os.Stderr, "warning: head or base host unknown; falling back to gh pr create for cross-repo PRs\n")
-			useAPICross = false
-		case !strings.EqualFold(headHost, baseHost):
-			fmt.Fprintf(os.Stderr, "warning: head remote host %s differs from base host %s; falling back to gh pr create\n", headHost, baseHost)
-			useAPICross = false
-		case strings.EqualFold(headOwner, baseOwner):
-			// same-owner fork: disambiguate the head repo via the API
-			useAPICross = true
-		default:
-			isOrg, err := isOrgOwner(headOwner)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not determine if %s is an organization: %v; falling back to gh pr create\n", headOwner, err)
-				useAPICross = false
-			} else {
-				useAPICross = isOrg
-			}
-		}
-	}
-
 	errors := 0
 	for i, br := range stack.Branches {
 		base := stack.Trunk
+		// The bottom PR is in the upstream/parent repo when in a fork; child PRs live in the fork.
+		prRepo := current
+		prHost := currentHost
+		if i == 0 && parent != "" {
+			prRepo = parent
+			prHost = parentHost
+		}
 		if i > 0 {
 			base = stack.Branches[i-1].Name
 		}
-		pr, err := ghPrView(br.Name)
+
+		pr, err := ghPrView(br.Name, prRepo)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to look up PR for %s: %v\n", br.Name, err)
 			errors++
@@ -386,13 +361,13 @@ func cmdSubmit(args []string) {
 
 		switch {
 		case pr != nil && pr.State == "OPEN":
-			if err := ensurePRBase(pr, base); err != nil {
+			if err := ensurePRBase(pr, base, prRepo); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to update PR for %s: %v\n", br.Name, err)
 				errors++
 				continue
 			}
 			if *open && pr.IsDraft {
-				if err := runGhWithErr("pr", "ready", strconv.Itoa(pr.Number)); err != nil {
+				if err := runGhWithErr("pr", "ready", strconv.Itoa(pr.Number), "--repo", prRepo); err != nil {
 					fmt.Fprintf(os.Stderr, "Failed to mark PR for %s as ready: %v\n", br.Name, err)
 					errors++
 					continue
@@ -402,9 +377,36 @@ func cmdSubmit(args []string) {
 		case pr != nil:
 			fmt.Printf("PR for %s is %s, skipping\n", br.Name, pr.State)
 		default:
-			head := br.Name
-			useAPI := useAPICross
+			prOwner := prRepo
+			if j := strings.Index(prRepo, "/"); j != -1 {
+				prOwner = prRepo[:j]
+			}
 
+			crossRepo := headRepo != "" && !strings.EqualFold(headRepo, prRepo)
+			useAPI := false
+			if crossRepo {
+				switch {
+				case headHost == "" || prHost == "":
+					fmt.Fprintf(os.Stderr, "warning: head or base host unknown; falling back to gh pr create for cross-repo PRs\n")
+					useAPI = false
+				case !strings.EqualFold(headHost, prHost):
+					fmt.Fprintf(os.Stderr, "warning: head remote host %s differs from base host %s; falling back to gh pr create\n", headHost, prHost)
+					useAPI = false
+				case strings.EqualFold(headOwner, prOwner):
+					// same-owner fork: disambiguate the head repo via the API
+					useAPI = true
+				default:
+					isOrg, err := isOrgOwner(headOwner)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "warning: could not determine if %s is an organization: %v; falling back to gh pr create\n", headOwner, err)
+						useAPI = false
+					} else {
+						useAPI = isOrg
+					}
+				}
+			}
+
+			head := br.Name
 			title := ""
 			body := ""
 			if *auto || useAPI {
@@ -423,7 +425,7 @@ func cmdSubmit(args []string) {
 
 			if useAPI {
 				apiArgs := []string{
-					"api", "--method", "POST", "repos/" + baseRepo + "/pulls",
+					"api", "--method", "POST", "repos/" + prRepo + "/pulls",
 					"-f", "title=" + title,
 					"-f", "body=" + body,
 					"-f", "base=" + base,
@@ -440,10 +442,10 @@ func cmdSubmit(args []string) {
 					continue
 				}
 			} else {
-				if headOwner != "" && !strings.EqualFold(headOwner, baseOwner) {
+				if headOwner != "" && !strings.EqualFold(headOwner, prOwner) {
 					head = headOwner + ":" + br.Name
 				}
-				createArgs := []string{"pr", "create", "--repo", baseRepo, "--base", base, "--head", head}
+				createArgs := []string{"pr", "create", "--repo", prRepo, "--base", base, "--head", head}
 				if *auto {
 					createArgs = append(createArgs, "--title", title, "--body", body)
 				} else {
@@ -480,19 +482,35 @@ func cmdSync(args []string) {
 	ghRun(syncArgs...)
 
 	stack := ghStackView()
+	if len(stack.Branches) == 0 {
+		fmt.Println("No branches in stack.")
+		return
+	}
+
+	current, parent, _, _, err := repoInfo()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to determine repo info: %v\n", err)
+		os.Exit(1)
+	}
+
 	errors := 0
 	for i, br := range stack.Branches {
 		base := stack.Trunk
+		// The bottom PR is in the upstream/parent repo when in a fork; child PRs live in the fork.
+		prRepo := current
+		if i == 0 && parent != "" {
+			prRepo = parent
+		}
 		if i > 0 {
 			base = stack.Branches[i-1].Name
 		}
-		pr, err := ghPrView(br.Name)
+		pr, err := ghPrView(br.Name, prRepo)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to look up PR for %s: %v\n", br.Name, err)
 			errors++
 			continue
 		}
-		if err := ensurePRBase(pr, base); err != nil {
+		if err := ensurePRBase(pr, base, prRepo); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to update PR for %s: %v\n", br.Name, err)
 			errors++
 			continue
@@ -525,6 +543,12 @@ func cmdMerge(args []string) {
 		return
 	}
 
+	current, parent, _, _, err := repoInfo()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to determine repo info: %v\n", err)
+		os.Exit(1)
+	}
+
 	var method []string
 	if *squash {
 		method = []string{"--squash"}
@@ -548,7 +572,12 @@ func cmdMerge(args []string) {
 	errors := 0
 	for i := len(stack.Branches) - 1; i >= 0; i-- {
 		br := stack.Branches[i]
-		pr, err := ghPrView(br.Name)
+		// The bottom PR is in the upstream/parent repo when in a fork; child PRs live in the fork.
+		prRepo := current
+		if i == 0 && parent != "" {
+			prRepo = parent
+		}
+		pr, err := ghPrView(br.Name, prRepo)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to look up PR for %s: %v\n", br.Name, err)
 			errors++
@@ -562,7 +591,7 @@ func cmdMerge(args []string) {
 			fmt.Printf("PR for %s is %s, skipping\n", br.Name, pr.State)
 			continue
 		}
-		mergeArgs := []string{"pr", "merge", strconv.Itoa(pr.Number)}
+		mergeArgs := []string{"pr", "merge", strconv.Itoa(pr.Number), "--repo", prRepo}
 		mergeArgs = append(mergeArgs, method...)
 		mergeArgs = append(mergeArgs, deleteFlag...)
 		mergeArgs = append(mergeArgs, adminFlag...)
