@@ -146,7 +146,7 @@ func repoInfo() (current, parent string, err error) {
 	return result.NameWithOwner, result.Parent.NameWithOwner, nil
 }
 
-func remoteOwner(remote string) (string, error) {
+func remoteInfo(remote string) (owner, repo string, err error) {
 	if remote == "" {
 		// prefer origin; otherwise pick the first git remote
 		if out, err := exec.Command("git", "remote").Output(); err == nil {
@@ -163,16 +163,16 @@ func remoteOwner(remote string) (string, error) {
 		}
 	}
 	if remote == "" {
-		return "", fmt.Errorf("no git remote configured")
+		return "", "", fmt.Errorf("no git remote configured")
 	}
-	url, err := exec.Command("git", "remote", "get-url", remote).Output()
+	url, err := exec.Command("git", "remote", "get-url", "--push", remote).Output()
 	if err != nil {
-		return "", fmt.Errorf("git remote get-url %s: %w", remote, err)
+		return "", "", fmt.Errorf("git remote get-url --push %s: %w", remote, err)
 	}
-	return ownerFromGitURL(strings.TrimSpace(string(url)))
+	return parseGitURL(strings.TrimSpace(string(url)))
 }
 
-func ownerFromGitURL(raw string) (string, error) {
+func parseGitURL(raw string) (owner, repo string, err error) {
 	// https://github.com/owner/repo.git
 	// ssh://git@github.com/owner/repo.git
 	// git@github.com:owner/repo.git
@@ -197,9 +197,21 @@ func ownerFromGitURL(raw string) (string, error) {
 		}
 	}
 	if len(clean) >= 2 {
-		return clean[len(clean)-2], nil
+		return clean[len(clean)-2], clean[len(clean)-1], nil
 	}
-	return "", fmt.Errorf("could not parse remote url: %s", raw)
+	return "", "", fmt.Errorf("could not parse remote url: %s", raw)
+}
+
+func isOrgOwner(owner string) (bool, error) {
+	out, errOut, err := gh.Exec("api", "orgs/"+owner, "--jq", ".type")
+	if err == nil {
+		return strings.TrimSpace(out.String()) == "Organization", nil
+	}
+	if strings.Contains(strings.ToLower(errOut.String()), "not found") ||
+		strings.Contains(strings.ToLower(errOut.String()), "404") {
+		return false, nil
+	}
+	return false, fmt.Errorf("gh api orgs/%s: %w", owner, err)
 }
 
 func ensurePRBase(pr *PR, base string) error {
@@ -252,11 +264,16 @@ func cmdSubmit(args []string) {
 	if i := strings.Index(baseRepo, "/"); i != -1 {
 		baseOwner = baseRepo[:i]
 	}
-	headOwner, err := remoteOwner(*remote)
+	headOwner, headRepoName, err := remoteInfo(*remote)
 	if err != nil {
 		// no remote configured or unparsable; let gh pr create infer from repo
-		fmt.Fprintf(os.Stderr, "warning: could not resolve remote owner: %v\n", err)
+		fmt.Fprintf(os.Stderr, "warning: could not resolve remote info: %v\n", err)
 		headOwner = ""
+		headRepoName = ""
+	}
+	headRepo := ""
+	if headOwner != "" && headRepoName != "" {
+		headRepo = headOwner + "/" + headRepoName
 	}
 
 	errors := 0
@@ -291,12 +308,28 @@ func cmdSubmit(args []string) {
 			fmt.Printf("PR for %s is %s, skipping\n", br.Name, pr.State)
 		default:
 			head := br.Name
-			if headOwner != "" && headOwner != baseOwner {
-				head = headOwner + ":" + br.Name
+			crossRepo := headRepo != "" && headRepo != baseRepo
+			useAPI := false
+			if crossRepo {
+				if headOwner == baseOwner {
+					// same-owner fork: disambiguate the head repo via the API
+					useAPI = true
+				} else {
+					org, orgErr := isOrgOwner(headOwner)
+					if orgErr != nil {
+						fmt.Fprintf(os.Stderr, "Failed to determine if %s is an organization: %v\n", headOwner, orgErr)
+						errors++
+						continue
+					}
+					useAPI = org
+				}
 			}
-			createArgs := []string{"pr", "create", "--repo", baseRepo, "--base", base, "--head", head}
-			if *auto {
-				title, body, err := prTitleAndBody(br.Name, base)
+
+			title := ""
+			body := ""
+			if *auto || useAPI {
+				var err error
+				title, body, err = prTitleAndBody(br.Name, base)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Failed to read commits for %s: %v\n", br.Name, err)
 					errors++
@@ -306,17 +339,44 @@ func cmdSubmit(args []string) {
 					fmt.Printf("Skipping %s: no commits to create a PR\n", br.Name)
 					continue
 				}
-				createArgs = append(createArgs, "--title", title, "--body", body)
+			}
+
+			if useAPI {
+				apiArgs := []string{
+					"api", "--method", "POST", "repos/" + baseRepo + "/pulls",
+					"-f", "title=" + title,
+					"-f", "body=" + body,
+					"-f", "base=" + base,
+					"-f", "head=" + br.Name,
+					"-f", "head_repo=" + headRepo,
+				}
+				if !*open {
+					apiArgs = append(apiArgs, "-F", "draft=true")
+				}
+				apiArgs = append(apiArgs, "--jq", ".html_url")
+				if err := runGhWithErr(apiArgs...); err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to create PR for %s: %v\n", br.Name, err)
+					errors++
+					continue
+				}
 			} else {
-				createArgs = append(createArgs, "--fill")
-			}
-			if !*open {
-				createArgs = append(createArgs, "--draft")
-			}
-			if err := runGhWithErr(createArgs...); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to create PR for %s: %v\n", br.Name, err)
-				errors++
-				continue
+				if headOwner != "" && headOwner != baseOwner {
+					head = headOwner + ":" + br.Name
+				}
+				createArgs := []string{"pr", "create", "--repo", baseRepo, "--base", base, "--head", head}
+				if *auto {
+					createArgs = append(createArgs, "--title", title, "--body", body)
+				} else {
+					createArgs = append(createArgs, "--fill")
+				}
+				if !*open {
+					createArgs = append(createArgs, "--draft")
+				}
+				if err := runGhWithErr(createArgs...); err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to create PR for %s: %v\n", br.Name, err)
+					errors++
+					continue
+				}
 			}
 			fmt.Printf("Created PR for %s -> %s\n", br.Name, base)
 		}
