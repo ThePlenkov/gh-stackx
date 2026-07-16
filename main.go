@@ -351,7 +351,7 @@ func cmdSubmit(args []string) {
 					"-f", "head_repo=" + headRepo,
 				}
 				if !*open {
-					apiArgs = append(apiArgs, "-f", "draft=true")
+					apiArgs = append(apiArgs, "-F", "draft=true")
 				}
 				apiArgs = append(apiArgs, "--jq", ".html_url")
 				if err := runGhWithErr(apiArgs...); err != nil {
