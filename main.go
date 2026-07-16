@@ -162,13 +162,13 @@ func repoInfo() (current, parent, currentHost, parentHost string, err error) {
 		return "", "", "", "", fmt.Errorf("parse repo view: %w", err)
 	}
 	current = result.NameWithOwner
-	_, _, currentHost, err = parseGitRemote(result.URL)
+	currentHost, _, _, err = parseGitRemote(result.URL)
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("parse current repo url %q: %w", result.URL, err)
 	}
 	if result.Parent != nil {
 		parent = result.Parent.NameWithOwner
-		_, _, parentHost, err = parseGitRemote(result.Parent.URL)
+		parentHost, _, _, err = parseGitRemote(result.Parent.URL)
 		if err != nil {
 			return "", "", "", "", fmt.Errorf("parse parent repo url %q: %w", result.Parent.URL, err)
 		}
@@ -267,13 +267,39 @@ func parseGitRemote(raw string) (host, owner, repo string, err error) {
 	return host, owner, repo, nil
 }
 
+var knownHostCache = map[string]bool{}
+
+func isKnownHost(host string) bool {
+	if host == "" || strings.EqualFold(host, "github.com") {
+		return true
+	}
+	if v, ok := knownHostCache[host]; ok {
+		return v
+	}
+	out, _, err := gh.Exec("auth", "status", "--hostname", host, "--json", "hosts")
+	ok := false
+	if err == nil {
+		var status struct {
+			Hosts map[string][]json.RawMessage `json:"hosts"`
+		}
+		if json.Unmarshal(out.Bytes(), &status) == nil {
+			_, ok = status.Hosts[host]
+		}
+	}
+	knownHostCache[host] = ok
+	return ok
+}
+
 func isOrgOwner(owner, host string) (bool, error) {
 	if !isValidGitHubOwner(owner) {
 		return false, fmt.Errorf("invalid GitHub owner: %s", owner)
 	}
+	if !isKnownHost(host) {
+		return false, fmt.Errorf("host %q is not a known authenticated GitHub host", host)
+	}
 	// /users/{owner} works for both user and organization accounts and returns a type field.
 	args := []string{"api"}
-	if host != "" {
+	if host != "" && !strings.EqualFold(host, "github.com") {
 		args = append(args, "--hostname", host)
 	}
 	args = append(args, "users/"+url.PathEscape(owner), "--jq", ".type")
@@ -314,9 +340,10 @@ func baseForBranch(stack Stack, i int) string {
 }
 
 // findPRForBranch locates an existing PR for a branch.
-// All branches are scoped to the current (fork) repo by default; branch 0 in
+// All branches are scoped to the current (fork) repo by default. Branch 0 in
 // a fork additionally falls back to the parent repo so existing PRs that were
-// submitted upstream can still be found and updated.
+// submitted upstream can still be found and updated; when no existing PR is
+// found, the bottom PR is created in the upstream parent repo.
 func findPRForBranch(branch, current, parent, currentHost, parentHost string, i int) (*PR, string, string, error) {
 	pr, err := ghPrView(branch, current, currentHost)
 	if err != nil {
@@ -333,6 +360,7 @@ func findPRForBranch(branch, current, parent, currentHost, parentHost string, i 
 		if pr != nil {
 			return pr, parent, parentHost, nil
 		}
+		return nil, parent, parentHost, nil
 	}
 	return nil, current, currentHost, nil
 }
