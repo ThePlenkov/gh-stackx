@@ -213,7 +213,7 @@ func parseGitRemote(raw string) (host, owner, repo string, err error) {
 	// Normalize it to ssh:// so url.Parse can handle it.
 	if !strings.Contains(raw, "://") && strings.Contains(raw, "@") {
 		parts := strings.SplitN(raw, "@", 2)
-		if strings.Contains(parts[1], ":") && strings.Contains(parts[1], "/") {
+		if strings.Contains(parts[1], ":") {
 			parts[1] = strings.Replace(parts[1], ":", "/", 1)
 		}
 		raw = "ssh://" + parts[0] + "@" + parts[1]
