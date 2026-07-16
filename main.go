@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -16,6 +18,19 @@ func init() {
 	os.Setenv("GH_PROMPT_DISABLED", "1")
 	os.Setenv("NO_COLOR", "1")
 	os.Setenv("CLICOLOR", "0")
+}
+
+var (
+	ownerRE = regexp.MustCompile(`^[A-Za-z0-9](?:-?[A-Za-z0-9]+)*$`)
+	repoRE  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+)
+
+func isValidGitHubOwner(s string) bool {
+	return ownerRE.MatchString(s) && len(s) <= 39
+}
+
+func isValidGitHubRepo(s string) bool {
+	return repoRE.MatchString(s) && len(s) <= 100 && !strings.EqualFold(s, ".") && !strings.EqualFold(s, "..")
 }
 
 func runGh(args ...string) (string, string, error) {
@@ -79,8 +94,9 @@ func ghStackView() Stack {
 	return stack
 }
 
-func ghPrView(branch string) (*PR, error) {
-	out, errOut, err := gh.Exec("pr", "view", branch, "--json", "number,state,baseRefName,isDraft")
+func ghPrView(branch, repo, host string) (*PR, error) {
+	args := []string{"pr", "view", branch, "--repo", repoWithHost(host, repo), "--json", "number,state,baseRefName,isDraft"}
+	out, errOut, err := gh.Exec(args...)
 	if err != nil {
 		// only a missing PR is the nil case; everything else is a real error
 		errText := strings.ToLower(errOut.String())
@@ -129,24 +145,38 @@ func prTitleAndBody(branch, base string) (string, string, error) {
 	return commits[0], strings.Join(commits[1:], "\n"), nil
 }
 
-func repoInfo() (current, parent string, err error) {
-	stdout, _, err := gh.Exec("repo", "view", "--json", "nameWithOwner,parent")
+func repoInfo() (current, parent, currentHost, parentHost string, err error) {
+	stdout, _, err := gh.Exec("repo", "view", "--json", "nameWithOwner,url,parent")
 	if err != nil {
-		return "", "", fmt.Errorf("gh repo view: %w", err)
+		return "", "", "", "", fmt.Errorf("gh repo view: %w", err)
 	}
 	var result struct {
 		NameWithOwner string `json:"nameWithOwner"`
-		Parent        struct {
+		URL           string `json:"url"`
+		Parent        *struct {
 			NameWithOwner string `json:"nameWithOwner"`
+			URL           string `json:"url"`
 		} `json:"parent"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		return "", "", fmt.Errorf("parse repo view: %w", err)
+		return "", "", "", "", fmt.Errorf("parse repo view: %w", err)
 	}
-	return result.NameWithOwner, result.Parent.NameWithOwner, nil
+	current = result.NameWithOwner
+	currentHost, _, _, err = parseGitRemote(result.URL)
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("parse current repo url %q: %w", result.URL, err)
+	}
+	if result.Parent != nil {
+		parent = result.Parent.NameWithOwner
+		parentHost, _, _, err = parseGitRemote(result.Parent.URL)
+		if err != nil {
+			return "", "", "", "", fmt.Errorf("parse parent repo url %q: %w", result.Parent.URL, err)
+		}
+	}
+	return
 }
 
-func remoteInfo(remote string) (owner, repo string, err error) {
+func remoteInfo(remote string) (host, owner, repo string, err error) {
 	if remote == "" {
 		// prefer origin; otherwise pick the first git remote
 		if out, err := exec.Command("git", "remote").Output(); err == nil {
@@ -163,47 +193,125 @@ func remoteInfo(remote string) (owner, repo string, err error) {
 		}
 	}
 	if remote == "" {
-		return "", "", fmt.Errorf("no git remote configured")
+		return "", "", "", fmt.Errorf("no git remote configured")
 	}
 	url, err := exec.Command("git", "remote", "get-url", "--push", remote).Output()
 	if err != nil {
-		return "", "", fmt.Errorf("git remote get-url --push %s: %w", remote, err)
+		return "", "", "", fmt.Errorf("git remote get-url --push %s: %w", remote, err)
 	}
-	return parseGitURL(strings.TrimSpace(string(url)))
+	host, owner, repo, err = parseGitRemote(strings.TrimSpace(string(url)))
+	return
 }
 
-func parseGitURL(raw string) (owner, repo string, err error) {
-	// https://github.com/owner/repo.git
-	// ssh://git@github.com/owner/repo.git
-	// git@github.com:owner/repo.git
+// splitScpHostPath finds the host/path separator in an scp-style remote.
+// It handles bracketed IPv6 hosts and ordinary host:path forms.
+func splitScpHostPath(s string) (host, path string, ok bool) {
+	if strings.HasPrefix(s, "[") {
+		if close := strings.Index(s, "]"); close != -1 && close+1 < len(s) && s[close+1] == ':' {
+			return s[:close+1], s[close+2:], true
+		}
+		return s, "", false
+	}
+	if colon := strings.Index(s, ":"); colon != -1 {
+		return s[:colon], s[colon+1:], true
+	}
+	return s, "", false
+}
+
+// parseGitRemote parses a git remote URL into host (port-stripped for comparison), owner, and repo.
+// It validates owner/repo are safe GitHub slugs and returns an error for local paths.
+func parseGitRemote(raw string) (host, owner, repo string, err error) {
+	raw = strings.TrimSpace(raw)
 	if strings.HasSuffix(raw, ".git") {
 		raw = raw[:len(raw)-4]
 	}
-	if i := strings.Index(raw, "://"); i != -1 {
-		raw = raw[i+3:]
+	// scp-style remotes have no scheme and use ':' to separate host/path.
+	// Normalize them to ssh:// so url.Parse can handle them.
+	if !strings.Contains(raw, "://") {
+		if at := strings.Index(raw, "@"); at != -1 {
+			parts := strings.SplitN(raw, "@", 2)
+			if hostPart, pathPart, ok := splitScpHostPath(parts[1]); ok {
+				raw = "ssh://" + parts[0] + "@" + hostPart + "/" + pathPart
+			} else {
+				raw = "ssh://" + parts[0] + "@" + parts[1]
+			}
+		} else if hostPart, pathPart, ok := splitScpHostPath(raw); ok {
+			// optional-user scp form: host:owner/repo
+			// avoid treating a Windows drive letter (C:/...) as a remote
+			if len(hostPart) > 1 {
+				raw = "ssh://" + hostPart + "/" + pathPart
+			}
+		}
 	}
-	if i := strings.Index(raw, "@"); i != -1 {
-		raw = raw[i+1:]
+	u, parseErr := url.Parse(raw)
+	if parseErr != nil || u.Host == "" {
+		return "", "", "", fmt.Errorf("could not parse remote URL")
 	}
-	// scp-style git@host:owner/repo -> host/owner/repo
-	if i := strings.Index(raw, ":"); i != -1 {
-		raw = raw[:i] + "/" + raw[i+1:]
-	}
-	parts := strings.Split(raw, "/")
+	host = u.Hostname()
+	path := strings.Trim(u.Path, "/")
+	parts := strings.Split(path, "/")
 	var clean []string
 	for _, p := range parts {
 		if p != "" {
 			clean = append(clean, p)
 		}
 	}
-	if len(clean) >= 2 {
-		return clean[len(clean)-2], clean[len(clean)-1], nil
+	if len(clean) < 2 {
+		return "", "", "", fmt.Errorf("could not parse remote URL for host %q: expected owner/repo", u.Host)
 	}
-	return "", "", fmt.Errorf("could not parse remote url: %s", raw)
+	owner = clean[len(clean)-2]
+	repo = clean[len(clean)-1]
+	if !isValidGitHubOwner(owner) || !isValidGitHubRepo(repo) {
+		return "", "", "", fmt.Errorf("invalid owner/repo in remote URL for host %q", u.Host)
+	}
+	return host, owner, repo, nil
 }
 
-func isOrgOwner(owner string) (bool, error) {
-	out, errOut, err := gh.Exec("api", "orgs/"+owner, "--jq", ".type")
+var knownHostCache = map[string]bool{}
+
+func isKnownHost(host string) bool {
+	if host == "" || strings.EqualFold(host, "github.com") {
+		return true
+	}
+	if v, ok := knownHostCache[host]; ok {
+		return v
+	}
+	out, _, err := gh.Exec("auth", "status", "--hostname", host, "--json", "hosts")
+	ok := false
+	if err == nil {
+		var status struct {
+			Hosts map[string][]json.RawMessage `json:"hosts"`
+		}
+		if json.Unmarshal(out.Bytes(), &status) == nil {
+			for _, entry := range status.Hosts[host] {
+				var auth struct {
+					State string `json:"state"`
+				}
+				if json.Unmarshal(entry, &auth) == nil && auth.State == "success" {
+					ok = true
+					break
+				}
+			}
+		}
+	}
+	knownHostCache[host] = ok
+	return ok
+}
+
+func isOrgOwner(owner, host string) (bool, error) {
+	if !isValidGitHubOwner(owner) {
+		return false, fmt.Errorf("invalid GitHub owner: %s", owner)
+	}
+	if !isKnownHost(host) {
+		return false, fmt.Errorf("host %q is not a known authenticated GitHub host", host)
+	}
+	// /users/{owner} works for both user and organization accounts and returns a type field.
+	args := []string{"api"}
+	if host != "" && !strings.EqualFold(host, "github.com") {
+		args = append(args, "--hostname", host)
+	}
+	args = append(args, "users/"+url.PathEscape(owner), "--jq", ".type")
+	out, errOut, err := gh.Exec(args...)
 	if err == nil {
 		return strings.TrimSpace(out.String()) == "Organization", nil
 	}
@@ -211,17 +319,58 @@ func isOrgOwner(owner string) (bool, error) {
 		strings.Contains(strings.ToLower(errOut.String()), "404") {
 		return false, nil
 	}
-	return false, fmt.Errorf("gh api orgs/%s: %w", owner, err)
+	return false, fmt.Errorf("gh api users/%s: %w", owner, err)
 }
 
-func ensurePRBase(pr *PR, base string) error {
+// repoWithHost returns a --repo value that may include an explicit host.
+func repoWithHost(host, repo string) string {
+	if host == "" {
+		return repo
+	}
+	return host + "/" + repo
+}
+
+func ensurePRBase(pr *PR, base, repo, host string) error {
 	if pr == nil || pr.State != "OPEN" {
 		return nil
 	}
 	if pr.BaseRefName == base {
 		return nil
 	}
-	return runGhWithErr("pr", "edit", strconv.Itoa(pr.Number), "--base", base)
+	return runGhWithErr("pr", "edit", strconv.Itoa(pr.Number), "--repo", repoWithHost(host, repo), "--base", base)
+}
+
+func baseForBranch(stack Stack, i int) string {
+	if i > 0 {
+		return stack.Branches[i-1].Name
+	}
+	return stack.Trunk
+}
+
+// findPRForBranch locates an existing PR for a branch.
+// All branches are scoped to the current (fork) repo by default. Branch 0 in
+// a fork additionally falls back to the parent repo so existing PRs that were
+// submitted upstream can still be found and updated; when no existing PR is
+// found, the bottom PR is created in the upstream parent repo.
+func findPRForBranch(branch, current, parent, currentHost, parentHost string, i int) (*PR, string, string, error) {
+	pr, err := ghPrView(branch, current, currentHost)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if pr != nil {
+		return pr, current, currentHost, nil
+	}
+	if i == 0 && parent != "" {
+		pr, err = ghPrView(branch, parent, parentHost)
+		if err != nil {
+			return nil, "", "", err
+		}
+		if pr != nil {
+			return pr, parent, parentHost, nil
+		}
+		return nil, parent, parentHost, nil
+	}
+	return nil, current, currentHost, nil
 }
 
 func pushStack(remote string) {
@@ -251,23 +400,16 @@ func cmdSubmit(args []string) {
 		return
 	}
 
-	current, parent, err := repoInfo()
+	current, parent, currentHost, parentHost, err := repoInfo()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to determine repo info: %v\n", err)
 		os.Exit(1)
 	}
-	baseRepo := current
-	if parent != "" {
-		baseRepo = parent
-	}
-	baseOwner := baseRepo
-	if i := strings.Index(baseRepo, "/"); i != -1 {
-		baseOwner = baseRepo[:i]
-	}
-	headOwner, headRepoName, err := remoteInfo(*remote)
+	headHost, headOwner, headRepoName, err := remoteInfo(*remote)
 	if err != nil {
 		// no remote configured or unparsable; let gh pr create infer from repo
 		fmt.Fprintf(os.Stderr, "warning: could not resolve remote info: %v\n", err)
+		headHost = ""
 		headOwner = ""
 		headRepoName = ""
 	}
@@ -276,13 +418,16 @@ func cmdSubmit(args []string) {
 		headRepo = headOwner + "/" + headRepoName
 	}
 
+	headOwnerIsOrg := false
+	var headOwnerOrgErr error
+	if headOwner != "" {
+		headOwnerIsOrg, headOwnerOrgErr = isOrgOwner(headOwner, headHost)
+	}
+
 	errors := 0
 	for i, br := range stack.Branches {
-		base := stack.Trunk
-		if i > 0 {
-			base = stack.Branches[i-1].Name
-		}
-		pr, err := ghPrView(br.Name)
+		base := baseForBranch(stack, i)
+		pr, prRepo, prHost, err := findPRForBranch(br.Name, current, parent, currentHost, parentHost, i)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to look up PR for %s: %v\n", br.Name, err)
 			errors++
@@ -291,13 +436,13 @@ func cmdSubmit(args []string) {
 
 		switch {
 		case pr != nil && pr.State == "OPEN":
-			if err := ensurePRBase(pr, base); err != nil {
+			if err := ensurePRBase(pr, base, prRepo, prHost); err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to update PR for %s: %v\n", br.Name, err)
 				errors++
 				continue
 			}
 			if *open && pr.IsDraft {
-				if err := runGhWithErr("pr", "ready", strconv.Itoa(pr.Number)); err != nil {
+				if err := runGhWithErr("pr", "ready", strconv.Itoa(pr.Number), "--repo", repoWithHost(prHost, prRepo)); err != nil {
 					fmt.Fprintf(os.Stderr, "Failed to mark PR for %s as ready: %v\n", br.Name, err)
 					errors++
 					continue
@@ -307,24 +452,42 @@ func cmdSubmit(args []string) {
 		case pr != nil:
 			fmt.Printf("PR for %s is %s, skipping\n", br.Name, pr.State)
 		default:
-			head := br.Name
-			crossRepo := headRepo != "" && headRepo != baseRepo
-			useAPI := false
-			if crossRepo {
-				if headOwner == baseOwner {
-					// same-owner fork: disambiguate the head repo via the API
-					useAPI = true
-				} else {
-					org, orgErr := isOrgOwner(headOwner)
-					if orgErr != nil {
-						fmt.Fprintf(os.Stderr, "Failed to determine if %s is an organization: %v\n", headOwner, orgErr)
-						errors++
-						continue
-					}
-					useAPI = org
-				}
+			prOwner := prRepo
+			if j := strings.Index(prRepo, "/"); j != -1 {
+				prOwner = prRepo[:j]
 			}
 
+			// Repos are identical only when both the slug and the host match.
+			crossRepo := headRepo != "" && (!strings.EqualFold(headRepo, prRepo) || !strings.EqualFold(headHost, prHost))
+			useAPI := false
+			errorOut := ""
+			if crossRepo {
+				switch {
+				case headHost == "" || prHost == "":
+					errorOut = fmt.Sprintf("head or base host unknown for cross-repo PR creation (head: %s, base: %s)", headHost, prHost)
+				case !strings.EqualFold(headHost, prHost):
+					errorOut = fmt.Sprintf("cross-host PR creation is not supported (head host: %s, base host: %s)", headHost, prHost)
+				case strings.EqualFold(headOwner, prOwner):
+					// same-owner fork: disambiguate the head repo via the API
+					useAPI = true
+				default:
+					// If we can't determine whether the head owner is an organization,
+					// keep the API head_repo path rather than falling back to gh pr create,
+					// which does not support organization-owned forks.
+					if headOwnerOrgErr != nil {
+						useAPI = true
+					} else {
+						useAPI = headOwnerIsOrg
+					}
+				}
+			}
+			if errorOut != "" {
+				fmt.Fprintf(os.Stderr, "Failed to create PR for %s: %s\n", br.Name, errorOut)
+				errors++
+				continue
+			}
+
+			head := br.Name
 			title := ""
 			body := ""
 			if *auto || useAPI {
@@ -343,7 +506,8 @@ func cmdSubmit(args []string) {
 
 			if useAPI {
 				apiArgs := []string{
-					"api", "--method", "POST", "repos/" + baseRepo + "/pulls",
+					"api", "--hostname", prHost,
+					"--method", "POST", "repos/" + prRepo + "/pulls",
 					"-f", "title=" + title,
 					"-f", "body=" + body,
 					"-f", "base=" + base,
@@ -360,10 +524,10 @@ func cmdSubmit(args []string) {
 					continue
 				}
 			} else {
-				if headOwner != "" && headOwner != baseOwner {
+				if headOwner != "" && !strings.EqualFold(headOwner, prOwner) {
 					head = headOwner + ":" + br.Name
 				}
-				createArgs := []string{"pr", "create", "--repo", baseRepo, "--base", base, "--head", head}
+				createArgs := []string{"pr", "create", "--repo", repoWithHost(prHost, prRepo), "--base", base, "--head", head}
 				if *auto {
 					createArgs = append(createArgs, "--title", title, "--body", body)
 				} else {
@@ -400,19 +564,27 @@ func cmdSync(args []string) {
 	ghRun(syncArgs...)
 
 	stack := ghStackView()
+	if len(stack.Branches) == 0 {
+		fmt.Println("No branches in stack.")
+		return
+	}
+
+	current, parent, currentHost, parentHost, err := repoInfo()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to determine repo info: %v\n", err)
+		os.Exit(1)
+	}
+
 	errors := 0
 	for i, br := range stack.Branches {
-		base := stack.Trunk
-		if i > 0 {
-			base = stack.Branches[i-1].Name
-		}
-		pr, err := ghPrView(br.Name)
+		base := baseForBranch(stack, i)
+		pr, prRepo, prHost, err := findPRForBranch(br.Name, current, parent, currentHost, parentHost, i)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to look up PR for %s: %v\n", br.Name, err)
 			errors++
 			continue
 		}
-		if err := ensurePRBase(pr, base); err != nil {
+		if err := ensurePRBase(pr, base, prRepo, prHost); err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to update PR for %s: %v\n", br.Name, err)
 			errors++
 			continue
@@ -445,6 +617,12 @@ func cmdMerge(args []string) {
 		return
 	}
 
+	current, parent, currentHost, parentHost, err := repoInfo()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to determine repo info: %v\n", err)
+		os.Exit(1)
+	}
+
 	var method []string
 	if *squash {
 		method = []string{"--squash"}
@@ -468,7 +646,7 @@ func cmdMerge(args []string) {
 	errors := 0
 	for i := len(stack.Branches) - 1; i >= 0; i-- {
 		br := stack.Branches[i]
-		pr, err := ghPrView(br.Name)
+		pr, prRepo, prHost, err := findPRForBranch(br.Name, current, parent, currentHost, parentHost, i)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to look up PR for %s: %v\n", br.Name, err)
 			errors++
@@ -482,7 +660,7 @@ func cmdMerge(args []string) {
 			fmt.Printf("PR for %s is %s, skipping\n", br.Name, pr.State)
 			continue
 		}
-		mergeArgs := []string{"pr", "merge", strconv.Itoa(pr.Number)}
+		mergeArgs := []string{"pr", "merge", strconv.Itoa(pr.Number), "--repo", repoWithHost(prHost, prRepo)}
 		mergeArgs = append(mergeArgs, method...)
 		mergeArgs = append(mergeArgs, deleteFlag...)
 		mergeArgs = append(mergeArgs, adminFlag...)
