@@ -229,7 +229,7 @@ func parseGitRemote(raw string) (host, owner, repo string, err error) {
 	}
 	u, parseErr := url.Parse(raw)
 	if parseErr != nil || u.Host == "" {
-		return "", "", "", fmt.Errorf("could not parse remote url: %s", raw)
+		return "", "", "", fmt.Errorf("could not parse remote URL")
 	}
 	host = u.Host
 	path := strings.Trim(u.Path, "/")
@@ -241,12 +241,12 @@ func parseGitRemote(raw string) (host, owner, repo string, err error) {
 		}
 	}
 	if len(clean) < 2 {
-		return "", "", "", fmt.Errorf("could not parse remote url: %s", raw)
+		return "", "", "", fmt.Errorf("could not parse remote URL for host %q: expected owner/repo", u.Host)
 	}
 	owner = clean[len(clean)-2]
 	repo = clean[len(clean)-1]
 	if !isValidGitHubOwner(owner) || !isValidGitHubRepo(repo) {
-		return "", "", "", fmt.Errorf("invalid owner/repo in remote url: %s", raw)
+		return "", "", "", fmt.Errorf("invalid owner/repo in remote URL for host %q", u.Host)
 	}
 	return host, owner, repo, nil
 }
