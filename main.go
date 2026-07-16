@@ -202,6 +202,22 @@ func remoteInfo(remote string) (host, owner, repo string, err error) {
 	return
 }
 
+// splitScpHostPath finds the host/path separator in an scp-style remote.
+// It handles bracketed IPv6 hosts and ordinary host:path forms.
+func splitScpHostPath(s string) (host, path string, ok bool) {
+	if strings.HasPrefix(s, "[") {
+		if close := strings.Index(s, "]"); close != -1 {
+			if colon := strings.Index(s[close+1:], ":"); colon != -1 {
+				return s[:close+1], s[close+1+colon+1:], true
+			}
+		}
+	}
+	if colon := strings.Index(s, ":"); colon != -1 {
+		return s[:colon], s[colon+1:], true
+	}
+	return s, "", false
+}
+
 // parseGitRemote parses a git remote URL into host (including port), owner, and repo.
 // It validates owner/repo are safe GitHub slugs and returns an error for local paths.
 func parseGitRemote(raw string) (host, owner, repo string, err error) {
@@ -214,16 +230,16 @@ func parseGitRemote(raw string) (host, owner, repo string, err error) {
 	if !strings.Contains(raw, "://") {
 		if at := strings.Index(raw, "@"); at != -1 {
 			parts := strings.SplitN(raw, "@", 2)
-			if strings.Contains(parts[1], ":") {
-				parts[1] = strings.Replace(parts[1], ":", "/", 1)
+			if hostPart, pathPart, ok := splitScpHostPath(parts[1]); ok {
+				raw = "ssh://" + parts[0] + "@" + hostPart + "/" + pathPart
+			} else {
+				raw = "ssh://" + parts[0] + "@" + parts[1]
 			}
-			raw = "ssh://" + parts[0] + "@" + parts[1]
-		} else if colon := strings.Index(raw, ":"); colon != -1 && strings.Contains(raw[colon+1:], "/") {
+		} else if hostPart, pathPart, ok := splitScpHostPath(raw); ok {
 			// optional-user scp form: host:owner/repo
 			// avoid treating a Windows drive letter (C:/...) as a remote
-			hostPart := raw[:colon]
 			if len(hostPart) > 1 {
-				raw = "ssh://" + hostPart + "/" + raw[colon+1:]
+				raw = "ssh://" + hostPart + "/" + pathPart
 			}
 		}
 	}
