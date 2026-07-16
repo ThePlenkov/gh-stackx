@@ -206,11 +206,10 @@ func remoteInfo(remote string) (host, owner, repo string, err error) {
 // It handles bracketed IPv6 hosts and ordinary host:path forms.
 func splitScpHostPath(s string) (host, path string, ok bool) {
 	if strings.HasPrefix(s, "[") {
-		if close := strings.Index(s, "]"); close != -1 {
-			if colon := strings.Index(s[close+1:], ":"); colon != -1 {
-				return s[:close+1], s[close+1+colon+1:], true
-			}
+		if close := strings.Index(s, "]"); close != -1 && close+1 < len(s) && s[close+1] == ':' {
+			return s[:close+1], s[close+2:], true
 		}
+		return s, "", false
 	}
 	if colon := strings.Index(s, ":"); colon != -1 {
 		return s[:colon], s[colon+1:], true
