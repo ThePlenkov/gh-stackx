@@ -457,7 +457,8 @@ func cmdSubmit(args []string) {
 				prOwner = prRepo[:j]
 			}
 
-			crossRepo := headRepo != "" && !strings.EqualFold(headRepo, prRepo)
+			// Repos are identical only when both the slug and the host match.
+			crossRepo := headRepo != "" && (!strings.EqualFold(headRepo, prRepo) || !strings.EqualFold(headHost, prHost))
 			useAPI := false
 			errorOut := ""
 			if crossRepo {
