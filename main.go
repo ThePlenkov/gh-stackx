@@ -30,7 +30,7 @@ func isValidGitHubOwner(s string) bool {
 }
 
 func isValidGitHubRepo(s string) bool {
-	return repoRE.MatchString(s) && !strings.EqualFold(s, ".") && !strings.EqualFold(s, "..")
+	return repoRE.MatchString(s) && len(s) <= 100 && !strings.EqualFold(s, ".") && !strings.EqualFold(s, "..")
 }
 
 func runGh(args ...string) (string, string, error) {
@@ -209,14 +209,23 @@ func parseGitRemote(raw string) (host, owner, repo string, err error) {
 	if strings.HasSuffix(raw, ".git") {
 		raw = raw[:len(raw)-4]
 	}
-	// scp-style git@host:path has no scheme and uses ':' to separate host/path.
-	// Normalize it to ssh:// so url.Parse can handle it.
-	if !strings.Contains(raw, "://") && strings.Contains(raw, "@") {
-		parts := strings.SplitN(raw, "@", 2)
-		if strings.Contains(parts[1], ":") {
-			parts[1] = strings.Replace(parts[1], ":", "/", 1)
+	// scp-style remotes have no scheme and use ':' to separate host/path.
+	// Normalize them to ssh:// so url.Parse can handle them.
+	if !strings.Contains(raw, "://") {
+		if at := strings.Index(raw, "@"); at != -1 {
+			parts := strings.SplitN(raw, "@", 2)
+			if strings.Contains(parts[1], ":") {
+				parts[1] = strings.Replace(parts[1], ":", "/", 1)
+			}
+			raw = "ssh://" + parts[0] + "@" + parts[1]
+		} else if colon := strings.Index(raw, ":"); colon != -1 && strings.Contains(raw[colon+1:], "/") {
+			// optional-user scp form: host:owner/repo
+			// avoid treating a Windows drive letter (C:/...) as a remote
+			hostPart := raw[:colon]
+			if len(hostPart) > 1 {
+				raw = "ssh://" + hostPart + "/" + raw[colon+1:]
+			}
 		}
-		raw = "ssh://" + parts[0] + "@" + parts[1]
 	}
 	u, parseErr := url.Parse(raw)
 	if parseErr != nil || u.Host == "" {
@@ -339,8 +348,8 @@ func cmdSubmit(args []string) {
 		default:
 			isOrg, err := isOrgOwner(headOwner)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not determine if %s is an organization: %v; attempting API path\n", headOwner, err)
-				useAPICross = true
+				fmt.Fprintf(os.Stderr, "warning: could not determine if %s is an organization: %v; falling back to gh pr create\n", headOwner, err)
+				useAPICross = false
 			} else {
 				useAPICross = isOrg
 			}
