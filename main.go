@@ -315,9 +315,9 @@ func cmdSubmit(args []string) {
 					// same-owner fork: disambiguate the head repo via the API
 					useAPI = true
 				} else {
-					org, err := isOrgOwner(headOwner)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Failed to determine if %s is an organization: %v\n", headOwner, err)
+					org, orgErr := isOrgOwner(headOwner)
+					if orgErr != nil {
+						fmt.Fprintf(os.Stderr, "Failed to determine if %s is an organization: %v\n", headOwner, orgErr)
 						errors++
 						continue
 					}
@@ -347,7 +347,7 @@ func cmdSubmit(args []string) {
 					"-f", "title=" + title,
 					"-f", "body=" + body,
 					"-f", "base=" + base,
-					"-f", "head=" + headOwner + ":" + br.Name,
+					"-f", "head=" + br.Name,
 					"-f", "head_repo=" + headRepo,
 				}
 				if !*open {
