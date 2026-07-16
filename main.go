@@ -129,24 +129,46 @@ func prTitleAndBody(branch, base string) (string, string, error) {
 	return commits[0], strings.Join(commits[1:], "\n"), nil
 }
 
-func repoInfo() (current, parent string, err error) {
-	stdout, _, err := gh.Exec("repo", "view", "--json", "nameWithOwner,parent")
+func hostFromURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if i := strings.Index(raw, "://"); i != -1 {
+		raw = raw[i+3:]
+	}
+	if i := strings.Index(raw, "@"); i != -1 {
+		raw = raw[i+1:]
+	}
+	if i := strings.IndexAny(raw, ":/"); i != -1 {
+		raw = raw[:i]
+	}
+	return raw
+}
+
+func repoInfo() (current, parent, currentHost, parentHost string, err error) {
+	stdout, _, err := gh.Exec("repo", "view", "--json", "nameWithOwner,url,parent")
 	if err != nil {
-		return "", "", fmt.Errorf("gh repo view: %w", err)
+		return "", "", "", "", fmt.Errorf("gh repo view: %w", err)
 	}
 	var result struct {
 		NameWithOwner string `json:"nameWithOwner"`
-		Parent        struct {
+		URL           string `json:"url"`
+		Parent        *struct {
 			NameWithOwner string `json:"nameWithOwner"`
+			URL           string `json:"url"`
 		} `json:"parent"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		return "", "", fmt.Errorf("parse repo view: %w", err)
+		return "", "", "", "", fmt.Errorf("parse repo view: %w", err)
 	}
-	return result.NameWithOwner, result.Parent.NameWithOwner, nil
+	current = result.NameWithOwner
+	currentHost = hostFromURL(result.URL)
+	if result.Parent != nil {
+		parent = result.Parent.NameWithOwner
+		parentHost = hostFromURL(result.Parent.URL)
+	}
+	return
 }
 
-func remoteInfo(remote string) (owner, repo string, err error) {
+func remoteInfo(remote string) (host, owner, repo string, err error) {
 	if remote == "" {
 		// prefer origin; otherwise pick the first git remote
 		if out, err := exec.Command("git", "remote").Output(); err == nil {
@@ -163,16 +185,21 @@ func remoteInfo(remote string) (owner, repo string, err error) {
 		}
 	}
 	if remote == "" {
-		return "", "", fmt.Errorf("no git remote configured")
+		return "", "", "", fmt.Errorf("no git remote configured")
 	}
 	url, err := exec.Command("git", "remote", "get-url", "--push", remote).Output()
 	if err != nil {
-		return "", "", fmt.Errorf("git remote get-url --push %s: %w", remote, err)
+		return "", "", "", fmt.Errorf("git remote get-url --push %s: %w", remote, err)
 	}
-	return parseGitURL(strings.TrimSpace(string(url)))
+	return parseGitRemote(strings.TrimSpace(string(url)))
 }
 
 func parseGitURL(raw string) (owner, repo string, err error) {
+	_, owner, repo, err = parseGitRemote(raw)
+	return
+}
+
+func parseGitRemote(raw string) (host, owner, repo string, err error) {
 	// https://github.com/owner/repo.git
 	// ssh://git@github.com/owner/repo.git
 	// git@github.com:owner/repo.git
@@ -196,14 +223,18 @@ func parseGitURL(raw string) (owner, repo string, err error) {
 			clean = append(clean, p)
 		}
 	}
-	if len(clean) >= 2 {
-		return clean[len(clean)-2], clean[len(clean)-1], nil
+	if len(clean) >= 3 {
+		return clean[0], clean[len(clean)-2], clean[len(clean)-1], nil
 	}
-	return "", "", fmt.Errorf("could not parse remote url: %s", raw)
+	if len(clean) == 2 {
+		return "", clean[0], clean[1], nil
+	}
+	return "", "", "", fmt.Errorf("could not parse remote url: %s", raw)
 }
 
 func isOrgOwner(owner string) (bool, error) {
-	out, errOut, err := gh.Exec("api", "orgs/"+owner, "--jq", ".type")
+	// /users/{owner} works for both user and organization accounts and returns a type field.
+	out, errOut, err := gh.Exec("api", "users/"+owner, "--jq", ".type")
 	if err == nil {
 		return strings.TrimSpace(out.String()) == "Organization", nil
 	}
@@ -211,7 +242,7 @@ func isOrgOwner(owner string) (bool, error) {
 		strings.Contains(strings.ToLower(errOut.String()), "404") {
 		return false, nil
 	}
-	return false, fmt.Errorf("gh api orgs/%s: %w", owner, err)
+	return false, fmt.Errorf("gh api users/%s: %w", owner, err)
 }
 
 func ensurePRBase(pr *PR, base string) error {
@@ -251,29 +282,37 @@ func cmdSubmit(args []string) {
 		return
 	}
 
-	current, parent, err := repoInfo()
+	current, parent, currentHost, parentHost, err := repoInfo()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to determine repo info: %v\n", err)
 		os.Exit(1)
 	}
 	baseRepo := current
+	baseHost := currentHost
 	if parent != "" {
 		baseRepo = parent
+		baseHost = parentHost
 	}
 	baseOwner := baseRepo
 	if i := strings.Index(baseRepo, "/"); i != -1 {
 		baseOwner = baseRepo[:i]
 	}
-	headOwner, headRepoName, err := remoteInfo(*remote)
+	headHost, headOwner, headRepoName, err := remoteInfo(*remote)
 	if err != nil {
 		// no remote configured or unparsable; let gh pr create infer from repo
 		fmt.Fprintf(os.Stderr, "warning: could not resolve remote info: %v\n", err)
+		headHost = ""
 		headOwner = ""
 		headRepoName = ""
 	}
 	headRepo := ""
 	if headOwner != "" && headRepoName != "" {
 		headRepo = headOwner + "/" + headRepoName
+	}
+	headIsOrg := false
+	var headOrgErr error
+	if headOwner != "" && !strings.EqualFold(headOwner, baseOwner) {
+		headIsOrg, headOrgErr = isOrgOwner(headOwner)
 	}
 
 	errors := 0
@@ -308,20 +347,20 @@ func cmdSubmit(args []string) {
 			fmt.Printf("PR for %s is %s, skipping\n", br.Name, pr.State)
 		default:
 			head := br.Name
-			crossRepo := headRepo != "" && headRepo != baseRepo
+			crossRepo := headRepo != "" && !strings.EqualFold(headRepo, baseRepo)
 			useAPI := false
 			if crossRepo {
-				if headOwner == baseOwner {
+				if headHost != "" && baseHost != "" && !strings.EqualFold(headHost, baseHost) {
+					fmt.Fprintf(os.Stderr, "warning: head remote host %s differs from base host %s; falling back to gh pr create\n", headHost, baseHost)
+					useAPI = false
+				} else if strings.EqualFold(headOwner, baseOwner) {
 					// same-owner fork: disambiguate the head repo via the API
 					useAPI = true
+				} else if headOrgErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not determine if %s is an organization: %v; falling back to gh pr create\n", headOwner, headOrgErr)
+					useAPI = false
 				} else {
-					org, orgErr := isOrgOwner(headOwner)
-					if orgErr != nil {
-						fmt.Fprintf(os.Stderr, "Failed to determine if %s is an organization: %v\n", headOwner, orgErr)
-						errors++
-						continue
-					}
-					useAPI = org
+					useAPI = headIsOrg
 				}
 			}
 
@@ -360,7 +399,7 @@ func cmdSubmit(args []string) {
 					continue
 				}
 			} else {
-				if headOwner != "" && headOwner != baseOwner {
+				if headOwner != "" && !strings.EqualFold(headOwner, baseOwner) {
 					head = headOwner + ":" + br.Name
 				}
 				createArgs := []string{"pr", "create", "--repo", baseRepo, "--base", base, "--head", head}
