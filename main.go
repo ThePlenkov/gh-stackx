@@ -283,7 +283,15 @@ func isKnownHost(host string) bool {
 			Hosts map[string][]json.RawMessage `json:"hosts"`
 		}
 		if json.Unmarshal(out.Bytes(), &status) == nil {
-			_, ok = status.Hosts[host]
+			for _, entry := range status.Hosts[host] {
+				var auth struct {
+					State string `json:"state"`
+				}
+				if json.Unmarshal(entry, &auth) == nil && auth.State == "success" {
+					ok = true
+					break
+				}
+			}
 		}
 	}
 	knownHostCache[host] = ok
