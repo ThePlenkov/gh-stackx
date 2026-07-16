@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -16,6 +18,19 @@ func init() {
 	os.Setenv("GH_PROMPT_DISABLED", "1")
 	os.Setenv("NO_COLOR", "1")
 	os.Setenv("CLICOLOR", "0")
+}
+
+var (
+	ownerRE = regexp.MustCompile(`^[A-Za-z0-9](?:-?[A-Za-z0-9]+)*$`)
+	repoRE  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+)
+
+func isValidGitHubOwner(s string) bool {
+	return ownerRE.MatchString(s) && len(s) <= 39
+}
+
+func isValidGitHubRepo(s string) bool {
+	return repoRE.MatchString(s) && !strings.EqualFold(s, ".") && !strings.EqualFold(s, "..")
 }
 
 func runGh(args ...string) (string, string, error) {
@@ -129,20 +144,6 @@ func prTitleAndBody(branch, base string) (string, string, error) {
 	return commits[0], strings.Join(commits[1:], "\n"), nil
 }
 
-func hostFromURL(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if i := strings.Index(raw, "://"); i != -1 {
-		raw = raw[i+3:]
-	}
-	if i := strings.Index(raw, "@"); i != -1 {
-		raw = raw[i+1:]
-	}
-	if i := strings.IndexAny(raw, ":/"); i != -1 {
-		raw = raw[:i]
-	}
-	return raw
-}
-
 func repoInfo() (current, parent, currentHost, parentHost string, err error) {
 	stdout, _, err := gh.Exec("repo", "view", "--json", "nameWithOwner,url,parent")
 	if err != nil {
@@ -160,10 +161,16 @@ func repoInfo() (current, parent, currentHost, parentHost string, err error) {
 		return "", "", "", "", fmt.Errorf("parse repo view: %w", err)
 	}
 	current = result.NameWithOwner
-	currentHost = hostFromURL(result.URL)
+	_, _, currentHost, err = parseGitRemote(result.URL)
+	if err != nil {
+		return "", "", "", "", fmt.Errorf("parse current repo url %q: %w", result.URL, err)
+	}
 	if result.Parent != nil {
 		parent = result.Parent.NameWithOwner
-		parentHost = hostFromURL(result.Parent.URL)
+		_, _, parentHost, err = parseGitRemote(result.Parent.URL)
+		if err != nil {
+			return "", "", "", "", fmt.Errorf("parse parent repo url %q: %w", result.Parent.URL, err)
+		}
 	}
 	return
 }
@@ -191,50 +198,56 @@ func remoteInfo(remote string) (host, owner, repo string, err error) {
 	if err != nil {
 		return "", "", "", fmt.Errorf("git remote get-url --push %s: %w", remote, err)
 	}
-	return parseGitRemote(strings.TrimSpace(string(url)))
-}
-
-func parseGitURL(raw string) (owner, repo string, err error) {
-	_, owner, repo, err = parseGitRemote(raw)
+	host, owner, repo, err = parseGitRemote(strings.TrimSpace(string(url)))
 	return
 }
 
+// parseGitRemote parses a git remote URL into host (including port), owner, and repo.
+// It validates owner/repo are safe GitHub slugs and returns an error for local paths.
 func parseGitRemote(raw string) (host, owner, repo string, err error) {
-	// https://github.com/owner/repo.git
-	// ssh://git@github.com/owner/repo.git
-	// git@github.com:owner/repo.git
+	raw = strings.TrimSpace(raw)
 	if strings.HasSuffix(raw, ".git") {
 		raw = raw[:len(raw)-4]
 	}
-	if i := strings.Index(raw, "://"); i != -1 {
-		raw = raw[i+3:]
+	// scp-style git@host:path has no scheme and uses ':' to separate host/path.
+	// Normalize it to ssh:// so url.Parse can handle it.
+	if !strings.Contains(raw, "://") && strings.Contains(raw, "@") {
+		parts := strings.SplitN(raw, "@", 2)
+		if strings.Contains(parts[1], ":") && strings.Contains(parts[1], "/") {
+			parts[1] = strings.Replace(parts[1], ":", "/", 1)
+		}
+		raw = "ssh://" + parts[0] + "@" + parts[1]
 	}
-	if i := strings.Index(raw, "@"); i != -1 {
-		raw = raw[i+1:]
+	u, parseErr := url.Parse(raw)
+	if parseErr != nil || u.Host == "" {
+		return "", "", "", fmt.Errorf("could not parse remote url: %s", raw)
 	}
-	// scp-style git@host:owner/repo -> host/owner/repo
-	if i := strings.Index(raw, ":"); i != -1 {
-		raw = raw[:i] + "/" + raw[i+1:]
-	}
-	parts := strings.Split(raw, "/")
+	host = u.Host
+	path := strings.Trim(u.Path, "/")
+	parts := strings.Split(path, "/")
 	var clean []string
 	for _, p := range parts {
 		if p != "" {
 			clean = append(clean, p)
 		}
 	}
-	if len(clean) >= 3 {
-		return clean[0], clean[len(clean)-2], clean[len(clean)-1], nil
+	if len(clean) < 2 {
+		return "", "", "", fmt.Errorf("could not parse remote url: %s", raw)
 	}
-	if len(clean) == 2 {
-		return "", clean[0], clean[1], nil
+	owner = clean[len(clean)-2]
+	repo = clean[len(clean)-1]
+	if !isValidGitHubOwner(owner) || !isValidGitHubRepo(repo) {
+		return "", "", "", fmt.Errorf("invalid owner/repo in remote url: %s", raw)
 	}
-	return "", "", "", fmt.Errorf("could not parse remote url: %s", raw)
+	return host, owner, repo, nil
 }
 
 func isOrgOwner(owner string) (bool, error) {
+	if !isValidGitHubOwner(owner) {
+		return false, fmt.Errorf("invalid GitHub owner: %s", owner)
+	}
 	// /users/{owner} works for both user and organization accounts and returns a type field.
-	out, errOut, err := gh.Exec("api", "users/"+owner, "--jq", ".type")
+	out, errOut, err := gh.Exec("api", "users/"+url.PathEscape(owner), "--jq", ".type")
 	if err == nil {
 		return strings.TrimSpace(out.String()) == "Organization", nil
 	}
@@ -309,10 +322,29 @@ func cmdSubmit(args []string) {
 	if headOwner != "" && headRepoName != "" {
 		headRepo = headOwner + "/" + headRepoName
 	}
-	headIsOrg := false
-	var headOrgErr error
-	if headOwner != "" && !strings.EqualFold(headOwner, baseOwner) {
-		headIsOrg, headOrgErr = isOrgOwner(headOwner)
+
+	crossRepo := headRepo != "" && !strings.EqualFold(headRepo, baseRepo)
+	useAPICross := false
+	if crossRepo {
+		switch {
+		case headHost == "" || baseHost == "":
+			fmt.Fprintf(os.Stderr, "warning: head or base host unknown; falling back to gh pr create for cross-repo PRs\n")
+			useAPICross = false
+		case !strings.EqualFold(headHost, baseHost):
+			fmt.Fprintf(os.Stderr, "warning: head remote host %s differs from base host %s; falling back to gh pr create\n", headHost, baseHost)
+			useAPICross = false
+		case strings.EqualFold(headOwner, baseOwner):
+			// same-owner fork: disambiguate the head repo via the API
+			useAPICross = true
+		default:
+			isOrg, err := isOrgOwner(headOwner)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not determine if %s is an organization: %v; attempting API path\n", headOwner, err)
+				useAPICross = true
+			} else {
+				useAPICross = isOrg
+			}
+		}
 	}
 
 	errors := 0
@@ -347,22 +379,7 @@ func cmdSubmit(args []string) {
 			fmt.Printf("PR for %s is %s, skipping\n", br.Name, pr.State)
 		default:
 			head := br.Name
-			crossRepo := headRepo != "" && !strings.EqualFold(headRepo, baseRepo)
-			useAPI := false
-			if crossRepo {
-				if headHost != "" && baseHost != "" && !strings.EqualFold(headHost, baseHost) {
-					fmt.Fprintf(os.Stderr, "warning: head remote host %s differs from base host %s; falling back to gh pr create\n", headHost, baseHost)
-					useAPI = false
-				} else if strings.EqualFold(headOwner, baseOwner) {
-					// same-owner fork: disambiguate the head repo via the API
-					useAPI = true
-				} else if headOrgErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: could not determine if %s is an organization: %v; falling back to gh pr create\n", headOwner, headOrgErr)
-					useAPI = false
-				} else {
-					useAPI = headIsOrg
-				}
-			}
+			useAPI := useAPICross
 
 			title := ""
 			body := ""
