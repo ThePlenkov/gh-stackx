@@ -118,10 +118,24 @@ gh stackx trunk
 - A PR has the wrong base: run `gh stackx sync`.
 - `submit` or `merge` stops with errors: fix the underlying `gh pr` issue, then re-run.
 
+## Install this skill
+
+With `npx skills` (Vercel skills):
+
+```bash
+npx skills add ThePlenkov/gh-stackx --skill gh-stackx
+```
+
+With `npx skill` (CodeBuddy):
+
+```bash
+SKILL_BASE_URL=https://github.com/ThePlenkov/gh-stackx/tree/main npx skill skills/gh-stackx
+```
+
 ## Further reading
 
-- `docs/usage.md` — practical walkthrough with examples.
-- `docs/methodology.md` — why and how stacked PRs work.
-- `docs/spec.md` — full command and architecture specification.
-- `docs/review.md` — review checklist for contributors.
-- `AGENTS.md` — how to work on this repository.
+- `./docs/usage.md` — practical walkthrough with examples.
+- `./docs/methodology.md` — why and how stacked PRs work.
+- `./docs/spec.md` — full command and architecture specification.
+- [`REVIEW.md`](https://github.com/ThePlenkov/gh-stackx/blob/main/REVIEW.md) — review policy for this repository.
+- [`AGENTS.md`](https://github.com/ThePlenkov/gh-stackx/blob/main/AGENTS.md) — how to work on this repository.
