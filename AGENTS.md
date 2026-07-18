@@ -52,7 +52,7 @@ Two audiences, two trees:
 - `skills/gh-stackx/docs/spec.md` — implementation spec for code modifiers.
 - `skills/gh-stackx/docs/review.md` — per-PR checklist for code modifiers.
 
-When a public interface changes, update all three of: `docs/usage.md`, `skills/gh-stackx/docs/spec.md`, and `skills/gh-stackx/SKILL.md`.
+When a public interface changes, update all four of: `README.md`, `docs/usage.md`, `skills/gh-stackx/docs/spec.md`, and `skills/gh-stackx/SKILL.md`.
 
 ## Conventions
 
@@ -68,7 +68,7 @@ When a public interface changes, update all three of: `docs/usage.md`, `skills/g
 
 1. Parse it with `pflag` in the relevant `cmd*` function.
 2. Pass it through to the `gh pr` / `gh stack` invocation.
-3. Update `skills/gh-stackx/docs/spec.md`, `docs/usage.md`, and `skills/gh-stackx/SKILL.md`.
+3. Update `README.md`, `skills/gh-stackx/docs/spec.md`, `docs/usage.md`, and `skills/gh-stackx/SKILL.md`.
 4. Add a test if the behavior is pure or can be exercised without network.
 
 ### Update dependencies
