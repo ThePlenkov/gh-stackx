@@ -31,7 +31,6 @@ test -z "$(gofmt -l .)"
 - `.github/workflows/release.yml` — precompiled binary release when a `v*` tag is pushed.
 - `skills/gh-stackx/` — installable agent skill for `gh-stackx`, including `SKILL.md` and `docs/`.
 - `REVIEW.md` — review policy that must always be observed.
-- `docs/` — user and agent documentation (also embedded in the skill at `skills/gh-stackx/docs/`).
 
 ## Conventions
 

@@ -134,8 +134,8 @@ SKILL_BASE_URL=https://github.com/ThePlenkov/gh-stackx/tree/main npx skill skill
 
 ## Further reading
 
-- `docs/usage.md` — practical walkthrough with examples.
-- `docs/methodology.md` — why and how stacked PRs work.
-- `docs/spec.md` — full command and architecture specification.
+- `./docs/usage.md` — practical walkthrough with examples.
+- `./docs/methodology.md` — why and how stacked PRs work.
+- `./docs/spec.md` — full command and architecture specification.
 - [`REVIEW.md`](https://github.com/ThePlenkov/gh-stackx/blob/main/REVIEW.md) — review policy for this repository.
 - [`AGENTS.md`](https://github.com/ThePlenkov/gh-stackx/blob/main/AGENTS.md) — how to work on this repository.
