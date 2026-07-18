@@ -28,14 +28,14 @@ These rules must always be observed when reviewing or contributing to `gh-stackx
 - The root `REVIEW.md` (this file) is updated when the review policy changes.
 - `AGENTS.md` is updated when build/test conventions or repository layout change.
 - `skills/gh-stackx/docs/spec.md` is updated when command behavior, flags, or the data model change.
-- `skills/gh-stackx/docs/usage.md` is updated when user-facing examples or workflows change.
+- `docs/usage.md` is updated when user-facing examples or workflows change.
 - `README.md` is updated when quick-start steps or requirements change.
 
 ## Code and design
 
 - The change has a clear, focused scope: one logical thing per PR (a bug fix, a command, a docs update, a dependency bump, etc.).
 - Error messages are actionable and include the command that failed.
-- New flags are documented in `--help` output and in `skills/gh-stackx/docs/usage.md`.
+- New flags are documented in `--help` output and in `docs/usage.md`.
 - `gh` and `git` calls use `gh.Exec` or `exec.Command` consistently with the rest of `main.go`.
 - Branch and repo slugs are validated before being passed to `gh pr` / `gh api`.
 - Mutually exclusive flags (e.g. `--squash` and `--rebase`) are rejected explicitly.
