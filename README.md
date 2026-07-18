@@ -1,17 +1,18 @@
 # gh-stackx
 
-A `gh` CLI extension that wraps [`github/gh-stack`](https://github.com/github/gh-stack) and overrides
-the remote operations that currently require the private-preview GitHub Stacked PRs API.
+A `gh` CLI extension that wraps [`github/gh-stack`](https://github.com/github/gh-stack) and overrides the remote operations that currently require the private-preview GitHub Stacked PRs API.
 
-It is **not** a replacement for `gh stack` — it is a separate command `gh stackx` that delegates
-to `github/gh-stack` for local operations and uses `gh pr create` / `gh pr edit` / `gh pr merge`
-for the remote workflow.
+It is **not** a replacement for `gh stack` — it is a separate command `gh stackx` that delegates to `github/gh-stack` for local operations and uses `gh pr create` / `gh pr edit` / `gh pr merge` for the remote workflow.
+
+- For the reasoning behind stacked PRs, read [`docs/methodology.md`](docs/methodology.md).
+- For a practical walkthrough, read [`docs/usage.md`](docs/usage.md).
+- For the full command and architecture spec, read [`docs/spec.md`](docs/spec.md).
+- For agents working on this repo, read [`AGENTS.md`](AGENTS.md).
+- For review criteria, read [`docs/review.md`](docs/review.md).
 
 ## Why
 
-`gh stack submit`, `gh stack link`, and `gh stack merge` depend on the GitHub Stack API, which is
-not enabled for most repositories. This extension provides the same end-to-end workflow using
-standard `gh pr` commands, so stacked PRs work without the private preview.
+`gh stack submit`, `gh stack link`, and `gh stack merge` depend on the GitHub Stack API, which is not enabled for most repositories. This extension provides the same end-to-end workflow using standard `gh pr` commands, so stacked PRs work without the private preview.
 
 ## Installation
 
@@ -28,6 +29,25 @@ standard `gh pr` commands, so stacked PRs work without the private preview.
    ```
 
 The extension is a precompiled Go binary, so `gh` downloads the right executable for your platform (Windows, Linux, macOS, including ARM64).
+
+## Quick example
+
+```bash
+git checkout main
+git pull origin main
+
+gh stackx init feature/auth
+# ... work and commit ...
+
+gh stackx add feature/api
+# ... work and commit ...
+
+gh stackx add feature/ui
+# ... work and commit ...
+
+gh stackx submit      # creates draft PRs with correct bases
+gh stackx merge       # merges from the top down
+```
 
 ## Usage
 
@@ -56,8 +76,7 @@ gh stackx submit --remote upstream
 
 ### `gh stackx sync`
 
-Runs `gh stack sync`, then ensures every open PR has the correct base branch set via
-`gh pr edit --base`.
+Runs `gh stack sync`, then ensures every open PR has the correct base branch set via `gh pr edit --base`.
 
 ```bash
 gh stackx sync
@@ -82,13 +101,21 @@ gh stackx merge --rebase
 
 ## Development
 
-You need Go 1.23 or later to build from source:
+You need Go 1.26 or later to build from source:
 
 ```bash
 cd gh-stackx
 go build
 gh extension install .
 gh stackx --help
+```
+
+Run the CI gates locally:
+
+```bash
+go test ./...
+go vet ./...
+test -z "$(gofmt -l .)"
 ```
 
 On Windows, `go build` produces `gh-stackx.exe`; on Linux and macOS it produces `gh-stackx`.

@@ -75,9 +75,9 @@ type Branch struct {
 }
 
 type Stack struct {
-	Trunk     string   `json:"trunk"`
-	Current   string   `json:"currentBranch"`
-	Branches  []Branch `json:"branches"`
+	Trunk    string   `json:"trunk"`
+	Current  string   `json:"currentBranch"`
+	Branches []Branch `json:"branches"`
 }
 
 func ghStackView() Stack {
