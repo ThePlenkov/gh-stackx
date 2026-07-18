@@ -1,6 +1,6 @@
-# Review Checklist
+# Per-PR Review Checklist
 
-Use this checklist when reviewing changes to `gh-stackx`.
+Use this checklist when reviewing a single PR to `gh-stackx`. The high-level review policy is in the repository root `REVIEW.md`; this file is the concrete per-PR checklist derived from it.
 
 ## Before merging
 
@@ -10,7 +10,7 @@ Use this checklist when reviewing changes to `gh-stackx`.
 - [ ] `gofmt -l .` returns no files (all Go source is formatted).
 - [ ] `go build ./...` succeeds.
 - [ ] New behavior is covered by a unit test, or there is a note explaining why it cannot be tested without network access.
-- [ ] The README, `docs/usage.md`, `docs/spec.md`, and the skill in `ThePlenkov/skills` are updated if the public interface changes.
+- [ ] The `README.md`, `docs/usage.md`, `docs/spec.md`, and `skills/gh-stackx/SKILL.md` are updated if the public interface changes.
 
 ## Code review
 
@@ -31,3 +31,4 @@ Use this checklist when reviewing changes to `gh-stackx`.
 - [ ] The change is mentioned in `CHANGELOG.md` or the PR description if user-visible.
 - [ ] Examples in `docs/usage.md` still work.
 - [ ] `AGENTS.md` is updated if build/test conventions change.
+- [ ] `REVIEW.md` is updated if the review policy itself changes.

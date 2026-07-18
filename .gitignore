@@ -1,3 +1,10 @@
 /gh-stackx
 /gh-stackx.exe
 /dist
+/.agents/
+/.claude/
+/.codebuddy/
+/agent/
+/skills-lock.json
+node_modules/
+

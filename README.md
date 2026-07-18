@@ -4,11 +4,13 @@ A `gh` CLI extension that wraps [`github/gh-stack`](https://github.com/github/gh
 
 It is **not** a replacement for `gh stack` — it is a separate command `gh stackx` that delegates to `github/gh-stack` for local operations and uses `gh pr create` / `gh pr edit` / `gh pr merge` for the remote workflow.
 
-- For the reasoning behind stacked PRs, read [`docs/methodology.md`](docs/methodology.md).
-- For a practical walkthrough, read [`docs/usage.md`](docs/usage.md).
-- For the full command and architecture spec, read [`docs/spec.md`](docs/spec.md).
+- For the reasoning behind stacked PRs, read [`skills/gh-stackx/docs/methodology.md`](skills/gh-stackx/docs/methodology.md).
+- For a practical walkthrough, read [`skills/gh-stackx/docs/usage.md`](skills/gh-stackx/docs/usage.md).
+- For the full command and architecture spec, read [`skills/gh-stackx/docs/spec.md`](skills/gh-stackx/docs/spec.md).
+- For the per-PR checklist, read [`skills/gh-stackx/docs/review.md`](skills/gh-stackx/docs/review.md).
 - For agents working on this repo, read [`AGENTS.md`](AGENTS.md).
-- For review criteria, read [`docs/review.md`](docs/review.md).
+- For review policy, read [`REVIEW.md`](REVIEW.md).
+- To use `gh-stackx` from an agent, install the skill from [`skills/gh-stackx/SKILL.md`](skills/gh-stackx/SKILL.md).
 
 ## Why
 

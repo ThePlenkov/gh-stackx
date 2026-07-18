@@ -20,7 +20,7 @@ A large change is hard to review all at once. Splitting it into a series of depe
 
 A typical stack looks like:
 
-```
+```text
 main
   └── feature/auth
         └── feature/api
@@ -54,7 +54,7 @@ In this example:
 
 GitHub's Stacked PRs API is in private preview. On most repositories `gh stack submit` fails with:
 
-```
+```text
 ⚠ Stacked PRs are not enabled for this repository
 ```
 

@@ -29,7 +29,9 @@ test -z "$(gofmt -l .)"
 - `go.mod` / `go.sum` — Go module and dependencies.
 - `.github/workflows/ci.yml` — tests, vet, and format checks on PRs and `main`.
 - `.github/workflows/release.yml` — precompiled binary release when a `v*` tag is pushed.
-- `docs/` — user and agent documentation.
+- `skills/gh-stackx/` — installable agent skill for `gh-stackx`, including `SKILL.md` and `docs/`.
+- `REVIEW.md` — review policy that must always be observed.
+- `docs/` — user and agent documentation (also embedded in the skill at `skills/gh-stackx/docs/`).
 
 ## Conventions
 
@@ -45,7 +47,7 @@ test -z "$(gofmt -l .)"
 
 1. Parse it with `pflag` in the relevant `cmd*` function.
 2. Pass it through to the `gh pr` / `gh stack` invocation.
-3. Update `docs/spec.md`, `docs/usage.md`, and the skill in `ThePlenkov/skills`.
+3. Update `skills/gh-stackx/docs/spec.md`, `skills/gh-stackx/docs/usage.md`, and `skills/gh-stackx/SKILL.md`.
 4. Add a test if the behavior is pure or can be exercised without network.
 
 ### Update dependencies
@@ -57,7 +59,7 @@ go mod tidy
 
 ### Update CI action versions
 
-Pin to the latest stable release tag for each action and update the same tags in `docs/spec.md` if referenced.
+Pin to the latest stable release tag for each action and update the same tags in `skills/gh-stackx/docs/spec.md` if referenced.
 
 ### Release
 
@@ -65,6 +67,6 @@ Push a `v*` tag. The `release.yml` workflow builds cross-platform binaries with 
 
 ## Troubleshooting
 
-- `gh stack view` fails: ensure `github/gh-stack` is installed (`gh extension install github/gh-stack`).
+- `gh stackx view` fails: ensure `github/gh-stack` is installed (`gh extension install github/gh-stack`).
 - `gh extension install .` fails: build first with `go build`.
 - Tests that call `git` fail locally: check that `git` is available and that a global commit template does not prepend unexpected text to commit subjects.
