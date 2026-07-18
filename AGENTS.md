@@ -32,6 +32,28 @@ test -z "$(gofmt -l .)"
 - `skills/gh-stackx/` — installable agent skill for `gh-stackx`, including `SKILL.md` and `docs/`.
 - `REVIEW.md` — review policy that must always be observed.
 
+## Documentation layout
+
+Two audiences, two trees:
+
+**User-facing** (people who use `gh-stackx` as a tool):
+
+- `README.md` — repository entry point and quickstart.
+- `docs/` — end-user guides:
+  - `docs/README.md` — doc index.
+  - `docs/usage.md` — practical walkthrough.
+  - `docs/methodology.md` — why and how stacked PRs work.
+
+**Agent/contributor-facing** (people who modify this codebase):
+
+- `AGENTS.md` (this file) — conventions for working on the repo.
+- `REVIEW.md` — review policy.
+- `skills/gh-stackx/SKILL.md` — installable agent skill (self-contained).
+- `skills/gh-stackx/docs/spec.md` — implementation spec for code modifiers.
+- `skills/gh-stackx/docs/review.md` — per-PR checklist for code modifiers.
+
+When a public interface changes, update the four files listed in the per-PR checklist at [`skills/gh-stackx/docs/review.md`](skills/gh-stackx/docs/review.md).
+
 ## Conventions
 
 - Keep the extension self-contained in `main.go`. Splitting into packages is only justified when the tool grows substantially.
@@ -46,7 +68,7 @@ test -z "$(gofmt -l .)"
 
 1. Parse it with `pflag` in the relevant `cmd*` function.
 2. Pass it through to the `gh pr` / `gh stack` invocation.
-3. Update `skills/gh-stackx/docs/spec.md`, `skills/gh-stackx/docs/usage.md`, and `skills/gh-stackx/SKILL.md`.
+3. Follow the documentation-update rule above (single source of truth is `skills/gh-stackx/docs/review.md`).
 4. Add a test if the behavior is pure or can be exercised without network.
 
 ### Update dependencies
