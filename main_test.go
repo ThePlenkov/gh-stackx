@@ -270,14 +270,16 @@ func TestBuildPRBody(t *testing.T) {
 		"auth-layer":    "Add authentication layer",
 		"api-endpoints": "Add API endpoints",
 	}
-	commits := []string{"Add authentication layer", "feat: token helper", "fix: tests"}
+	commits := []string{"feat: token helper", "fix: tests"}
 
 	got := buildPRBody(stack, "auth-layer", prs, titles, commits)
 	if !strings.Contains(got, "### Commits") {
 		t.Errorf("buildPRBody() missing Commits section in:\n%s", got)
 	}
-	if !strings.Contains(got, "feat: token helper") {
-		t.Errorf("buildPRBody() missing commit subject in:\n%s", got)
+	for _, want := range commits {
+		if !strings.Contains(got, want) {
+			t.Errorf("buildPRBody() missing commit subject %q in:\n%s", want, got)
+		}
 	}
 	if !strings.Contains(got, "[#30](https://github.com/ThePlenkov/gh-stackx/pull/30)") {
 		t.Errorf("buildPRBody() missing PR link in:\n%s", got)

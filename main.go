@@ -412,8 +412,8 @@ func formatStackTable(stack Stack, current string, prs map[string]branchPRInfo, 
 // buildPRBody combines a stack table with the remaining commit subjects for a branch.
 func buildPRBody(stack Stack, current string, prs map[string]branchPRInfo, titles map[string]string, commits []string) string {
 	body := formatStackTable(stack, current, prs, titles)
-	if len(commits) > 1 {
-		body += "\n\n### Commits\n\n" + strings.Join(commits[1:], "\n")
+	if len(commits) > 0 {
+		body += "\n\n### Commits\n\n" + strings.Join(commits, "\n")
 	}
 	return body
 }
@@ -652,10 +652,10 @@ func cmdSubmit(args []string) {
 			if !ok || info.pr == nil || info.pr.State != "OPEN" {
 				continue
 			}
-			commits, ok := branchCommits[br.Name]
-			if !ok || len(commits) == 0 {
+			if _, ok := branchTitles[br.Name]; !ok {
 				continue
 			}
+			commits := branchCommits[br.Name]
 			base := baseForBranch(stack, i)
 			body := buildPRBody(stack, br.Name, infos, branchTitles, commits)
 			if err := runGhWithErr("pr", "edit", strconv.Itoa(info.pr.Number), "--repo", repoWithHost(info.host, info.repo), "--body", body); err != nil {
