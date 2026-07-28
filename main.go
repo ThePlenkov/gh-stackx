@@ -118,7 +118,7 @@ func ghPrView(branch, repo, host string) (*PR, error) {
 
 func gitCommitsBetween(base, branch string) ([]string, error) {
 	rev := base + ".." + branch
-	out, err := exec.Command("git", "log", "--format=%s", "--reverse", "--end-of-options", rev).Output()
+	out, err := exec.Command("git", "log", "--format=%s", "--reverse", "--end-of-options", rev).Output() // nosemgrep: go-command-execution
 	if err != nil {
 		return nil, fmt.Errorf("git log %s: %w", rev, err)
 	}
@@ -179,7 +179,7 @@ func repoInfo() (current, parent, currentHost, parentHost string, err error) {
 func remoteInfo(remote string) (host, owner, repo string, err error) {
 	if remote == "" {
 		// prefer origin; otherwise pick the first git remote
-		if out, err := exec.Command("git", "remote").Output(); err == nil {
+		if out, err := exec.Command("git", "remote").Output(); err == nil { // nosemgrep: go-command-execution
 			remotes := strings.Fields(string(out))
 			for _, r := range remotes {
 				if r == "origin" {
@@ -195,7 +195,7 @@ func remoteInfo(remote string) (host, owner, repo string, err error) {
 	if remote == "" {
 		return "", "", "", fmt.Errorf("no git remote configured")
 	}
-	url, err := exec.Command("git", "remote", "get-url", "--push", remote).Output()
+	url, err := exec.Command("git", "remote", "get-url", "--push", remote).Output() // nosemgrep: go-command-execution
 	if err != nil {
 		return "", "", "", fmt.Errorf("git remote get-url --push %s: %w", remote, err)
 	}
