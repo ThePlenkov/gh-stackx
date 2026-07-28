@@ -72,8 +72,10 @@ New PRs are created as drafts unless `--open` is passed.
 
 For each new PR, `submit` reads the commits between the base and the branch with `git log --format=%s --reverse`.
 
-- If there is one commit, the title is the commit subject and the body is empty.
-- If there are multiple commits, the title is the first subject and the body is the remaining subjects joined by `\n`.
+- If there is one commit, the title is the commit subject and the body contains only the stack table.
+- If there are multiple commits, the title is the first subject and the remaining subjects are listed under a `### Commits` section after the stack table.
+
+The body always includes a `## Stack` GFM table that renders the whole stack from top to trunk. Each row shows the PR title, a linked PR number (when known), and the branch name. The PR being edited is bold, and the trunk branch appears at the bottom with no PR number.
 
 ## Merge rules
 

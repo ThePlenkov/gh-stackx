@@ -81,7 +81,7 @@ Remote operations are overridden:
 ### `gh stackx submit`
 
 Pushes the stack and creates/updates PRs with `gh pr create` and `gh pr edit`.
-New PRs are created as drafts unless `--open` is passed.
+New PRs are created as drafts unless `--open` is passed. Each PR body includes a `## Stack` GFM table showing the full stack.
 
 ```bash
 gh stackx submit --open

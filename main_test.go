@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -177,16 +178,111 @@ func TestPrTitleAndBody(t *testing.T) {
 	run("git", "commit", "--allow-empty", "-m", "fix: handle edge case")
 	run("git", "commit", "--allow-empty", "-m", "docs: update README")
 
-	title, body, err := prTitleAndBody("feature", "main")
+	title, commits, err := prTitleAndBody("feature", "main")
 	if err != nil {
 		t.Fatalf("prTitleAndBody: %v", err)
 	}
 	if title != "feat: add auth" {
 		t.Errorf("title = %q, want %q", title, "feat: add auth")
 	}
-	wantBody := "fix: handle edge case\ndocs: update README"
-	if body != wantBody {
-		t.Errorf("body = %q, want %q", body, wantBody)
+	wantCommits := []string{"fix: handle edge case", "docs: update README"}
+	if len(commits) != len(wantCommits) {
+		t.Fatalf("commits = %v, want %v", commits, wantCommits)
+	}
+	for i := range wantCommits {
+		if commits[i] != wantCommits[i] {
+			t.Errorf("commits[%d] = %q, want %q", i, commits[i], wantCommits[i])
+		}
+	}
+}
+
+func TestPrURL(t *testing.T) {
+	tests := []struct {
+		host   string
+		repo   string
+		number int
+		want   string
+	}{
+		{"", "ThePlenkov/gh-stackx", 24, "https://github.com/ThePlenkov/gh-stackx/pull/24"},
+		{"github.com", "ThePlenkov/gh-stackx", 24, "https://github.com/ThePlenkov/gh-stackx/pull/24"},
+		{"ghe.example.com", "org/repo", 1, "https://ghe.example.com/org/repo/pull/1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := prURL(tt.host, tt.repo, tt.number); got != tt.want {
+				t.Errorf("prURL(%q, %q, %d) = %q, want %q", tt.host, tt.repo, tt.number, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatStackTable(t *testing.T) {
+	stack := Stack{
+		Trunk:   "main",
+		Current: "auth-layer",
+		Branches: []Branch{
+			{Name: "auth-layer"},
+			{Name: "api-endpoints"},
+			{Name: "frontend"},
+		},
+	}
+	prs := map[string]branchPRInfo{
+		"frontend":      {pr: &PR{Number: 32}, repo: "ThePlenkov/gh-stackx", host: "github.com"},
+		"api-endpoints": {pr: &PR{Number: 30}, repo: "ThePlenkov/gh-stackx", host: "github.com"},
+	}
+	titles := map[string]string{
+		"auth-layer":    "Add authentication layer",
+		"api-endpoints": "Add API endpoints",
+		"frontend":      "Add frontend",
+	}
+
+	got := formatStackTable(stack, "auth-layer", prs, titles)
+
+	want := []string{
+		"## Stack",
+		"| # | Title | Pull request | Branch |",
+		"|---|-------|--------------|--------|",
+		"| 1 | Add frontend | [#32](https://github.com/ThePlenkov/gh-stackx/pull/32) | `frontend` |",
+		"| 2 | Add API endpoints | [#30](https://github.com/ThePlenkov/gh-stackx/pull/30) | `api-endpoints` |",
+		"| 3 | **Add authentication layer** |  | **`auth-layer`** |",
+		"| | _main_ | | `main` |",
+	}
+	for _, line := range want {
+		if !strings.Contains(got, line) {
+			t.Errorf("formatStackTable() missing line %q in:\n%s", line, got)
+		}
+	}
+}
+
+func TestBuildPRBody(t *testing.T) {
+	stack := Stack{
+		Trunk:   "main",
+		Current: "auth-layer",
+		Branches: []Branch{
+			{Name: "auth-layer"},
+			{Name: "api-endpoints"},
+		},
+	}
+	prs := map[string]branchPRInfo{
+		"api-endpoints": {pr: &PR{Number: 30}, repo: "ThePlenkov/gh-stackx", host: "github.com"},
+	}
+	titles := map[string]string{
+		"auth-layer":    "Add authentication layer",
+		"api-endpoints": "Add API endpoints",
+	}
+	commits := []string{"feat: token helper", "fix: tests"}
+
+	got := buildPRBody(stack, "auth-layer", prs, titles, commits)
+	if !strings.Contains(got, "### Commits") {
+		t.Errorf("buildPRBody() missing Commits section in:\n%s", got)
+	}
+	for _, want := range commits {
+		if !strings.Contains(got, want) {
+			t.Errorf("buildPRBody() missing commit subject %q in:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "[#30](https://github.com/ThePlenkov/gh-stackx/pull/30)") {
+		t.Errorf("buildPRBody() missing PR link in:\n%s", got)
 	}
 }
 

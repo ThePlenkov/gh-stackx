@@ -113,7 +113,9 @@ gh stackx merge --no-delete-branch
 
 ## Title and body generation
 
-`gh stackx submit` generates PR titles from the first commit on each branch. If a branch has more than one commit, the first commit becomes the title and the remaining commit subjects become the body, one per line.
+`gh stackx submit` generates PR titles from the first commit on each branch. If a branch has more than one commit, the first commit becomes the title and the remaining commit subjects are listed under a `### Commits` section.
+
+Every stacked PR body also contains a `## Stack` table that shows the full stack from top to trunk, including each PR's number, title, and branch. The current PR is bold, and the trunk branch is listed at the bottom.
 
 ## Working with forks
 
