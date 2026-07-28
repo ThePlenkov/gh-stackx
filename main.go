@@ -131,18 +131,18 @@ func gitCommitsBetween(base, branch string) ([]string, error) {
 	return commits, nil
 }
 
-func prTitleAndBody(branch, base string) (string, string, error) {
+func prTitleAndBody(branch, base string) (string, []string, error) {
 	commits, err := gitCommitsBetween(base, branch)
 	if err != nil {
-		return "", "", err
+		return "", nil, err
 	}
 	if len(commits) == 0 {
-		return "", "", nil
+		return "", nil, nil
 	}
 	if len(commits) == 1 {
-		return commits[0], "", nil
+		return commits[0], nil, nil
 	}
-	return commits[0], strings.Join(commits[1:], "\n"), nil
+	return commits[0], commits[1:], nil
 }
 
 func repoInfo() (current, parent, currentHost, parentHost string, err error) {
@@ -347,6 +347,77 @@ func baseForBranch(stack Stack, i int) string {
 	return stack.Trunk
 }
 
+// branchPRInfo captures the PR and repository context for a stack branch.
+type branchPRInfo struct {
+	pr   *PR
+	repo string
+	host string
+}
+
+// prURL returns a web URL for a pull request.
+func prURL(host, repo string, number int) string {
+	if host == "" || strings.EqualFold(host, "github.com") {
+		return fmt.Sprintf("https://github.com/%s/pull/%d", repo, number)
+	}
+	return fmt.Sprintf("https://%s/%s/pull/%d", host, repo, number)
+}
+
+// escapeTableCell escapes characters that would break a GFM table cell.
+func escapeTableCell(s string) string {
+	s = strings.ReplaceAll(s, "|", "\\|")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
+}
+
+// formatStackTable renders a GFM table describing the whole stack from top to trunk.
+func formatStackTable(stack Stack, current string, prs map[string]branchPRInfo, titles map[string]string) string {
+	var b strings.Builder
+	fmt.Fprintln(&b, "## Stack")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "| # | Title | Pull request | Branch |")
+	fmt.Fprintln(&b, "|---|-------|--------------|--------|")
+
+	n := len(stack.Branches)
+	for i, row := 0, n-1; i < n; i, row = i+1, row-1 {
+		br := stack.Branches[row]
+		title := titles[br.Name]
+		if title == "" {
+			title = br.Name
+		}
+		title = escapeTableCell(title)
+
+		prCell := ""
+		if info, ok := prs[br.Name]; ok && info.pr != nil {
+			prCell = fmt.Sprintf("[#%d](%s)", info.pr.Number, prURL(info.host, info.repo, info.pr.Number))
+		}
+
+		branchCell := fmt.Sprintf("`%s`", escapeTableCell(br.Name))
+
+		if br.Name == current {
+			title = "**" + title + "**"
+			if prCell != "" {
+				prCell = "**" + prCell + "**"
+			}
+			branchCell = "**" + branchCell + "**"
+		}
+
+		fmt.Fprintf(&b, "| %d | %s | %s | %s |\n", i+1, title, prCell, branchCell)
+	}
+
+	trunkTitle := escapeTableCell(stack.Trunk)
+	fmt.Fprintf(&b, "| | _%s_ | | `%s` |\n", trunkTitle, escapeTableCell(stack.Trunk))
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// buildPRBody combines a stack table with the remaining commit subjects for a branch.
+func buildPRBody(stack Stack, current string, prs map[string]branchPRInfo, titles map[string]string, commits []string) string {
+	body := formatStackTable(stack, current, prs, titles)
+	if len(commits) > 1 {
+		body += "\n\n### Commits\n\n" + strings.Join(commits[1:], "\n")
+	}
+	return body
+}
+
 // findPRForBranch locates an existing PR for a branch.
 // All branches are scoped to the current (fork) repo by default. Branch 0 in
 // a fork additionally falls back to the parent repo so existing PRs that were
@@ -424,9 +495,22 @@ func cmdSubmit(args []string) {
 		headOwnerIsOrg, headOwnerOrgErr = isOrgOwner(headOwner, headHost)
 	}
 
+	branchTitles := make(map[string]string)
+	branchCommits := make(map[string][]string)
+	infos := make(map[string]branchPRInfo)
+
 	errors := 0
 	for i, br := range stack.Branches {
 		base := baseForBranch(stack, i)
+
+		title, commits, err := prTitleAndBody(br.Name, base)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to read commits for %s: %v\n", br.Name, err)
+		} else if title != "" {
+			branchTitles[br.Name] = title
+			branchCommits[br.Name] = commits
+		}
+
 		pr, prRepo, prHost, err := findPRForBranch(br.Name, current, parent, currentHost, parentHost, i)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to look up PR for %s: %v\n", br.Name, err)
@@ -449,8 +533,10 @@ func cmdSubmit(args []string) {
 				}
 			}
 			fmt.Printf("Updated PR #%d for %s -> %s\n", pr.Number, br.Name, base)
+			infos[br.Name] = branchPRInfo{pr: pr, repo: prRepo, host: prHost}
 		case pr != nil:
 			fmt.Printf("PR for %s is %s, skipping\n", br.Name, pr.State)
+			infos[br.Name] = branchPRInfo{pr: pr, repo: prRepo, host: prHost}
 		default:
 			prOwner := prRepo
 			if j := strings.Index(prRepo, "/"); j != -1 {
@@ -487,21 +573,21 @@ func cmdSubmit(args []string) {
 				continue
 			}
 
-			head := br.Name
 			title := ""
-			body := ""
+			commits := []string(nil)
 			if *auto || useAPI {
-				var err error
-				title, body, err = prTitleAndBody(br.Name, base)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to read commits for %s: %v\n", br.Name, err)
-					errors++
-					continue
-				}
-				if title == "" {
+				var ok bool
+				title, ok = branchTitles[br.Name]
+				commits = branchCommits[br.Name]
+				if !ok || title == "" {
 					fmt.Printf("Skipping %s: no commits to create a PR\n", br.Name)
 					continue
 				}
+			}
+
+			body := ""
+			if *auto || useAPI {
+				body = buildPRBody(stack, br.Name, infos, branchTitles, commits)
 			}
 
 			if useAPI {
@@ -524,11 +610,12 @@ func cmdSubmit(args []string) {
 					continue
 				}
 			} else {
+				head := br.Name
 				if headOwner != "" && !strings.EqualFold(headOwner, prOwner) {
 					head = headOwner + ":" + br.Name
 				}
 				createArgs := []string{"pr", "create", "--repo", repoWithHost(prHost, prRepo), "--base", base, "--head", head}
-				if *auto {
+				if *auto || useAPI {
 					createArgs = append(createArgs, "--title", title, "--body", body)
 				} else {
 					createArgs = append(createArgs, "--fill")
@@ -542,7 +629,41 @@ func cmdSubmit(args []string) {
 					continue
 				}
 			}
-			fmt.Printf("Created PR for %s -> %s\n", br.Name, base)
+
+			pr, prRepo, prHost, err = findPRForBranch(br.Name, current, parent, currentHost, parentHost, i)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to look up created PR for %s: %v\n", br.Name, err)
+				errors++
+				continue
+			}
+			if pr == nil {
+				fmt.Fprintf(os.Stderr, "Created PR for %s but could not find it to update the body\n", br.Name)
+				errors++
+				continue
+			}
+			fmt.Printf("Created PR #%d for %s -> %s\n", pr.Number, br.Name, base)
+			infos[br.Name] = branchPRInfo{pr: pr, repo: prRepo, host: prHost}
+		}
+	}
+
+	if *auto {
+		for i, br := range stack.Branches {
+			info, ok := infos[br.Name]
+			if !ok || info.pr == nil || info.pr.State != "OPEN" {
+				continue
+			}
+			commits, ok := branchCommits[br.Name]
+			if !ok || len(commits) == 0 {
+				continue
+			}
+			base := baseForBranch(stack, i)
+			body := buildPRBody(stack, br.Name, infos, branchTitles, commits)
+			if err := runGhWithErr("pr", "edit", strconv.Itoa(info.pr.Number), "--repo", repoWithHost(info.host, info.repo), "--body", body); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to update PR body for %s: %v\n", br.Name, err)
+				errors++
+				continue
+			}
+			fmt.Printf("Updated PR #%d body for %s -> %s\n", info.pr.Number, br.Name, base)
 		}
 	}
 

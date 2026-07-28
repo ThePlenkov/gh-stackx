@@ -71,7 +71,7 @@ gh stackx submit       # drafts
 gh stackx submit --open
 ```
 
-`submit` pushes all branches and creates/updates PRs bottom-up with the correct `--base` and `--head`.
+`submit` pushes all branches and creates/updates PRs bottom-up with the correct `--base` and `--head`. Each PR body includes a `## Stack` GFM table showing the full stack from top to trunk.
 
 ### Sync after trunk or parent PR changes
 
