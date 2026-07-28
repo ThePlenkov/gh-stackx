@@ -1,0 +1,14 @@
+{
+    "name": "gh-stackx",
+    "version": "1.0.0",
+    "description": "Devin plugin for the gh-stackx gh CLI extension — manage stacked PRs with plain gh pr commands.",
+    "homepage": "https://github.com/ThePlenkov/gh-stackx",
+    "repository": "https://github.com/ThePlenkov/gh-stackx.git",
+    "license": "MIT",
+    "keywords": [
+        "gh",
+        "stacked-prs",
+        "cli",
+        "devin"
+    ]
+}
