@@ -36,3 +36,6 @@ jobs:
           go_sast_enabled: "true"
           golang_sast_enabled: "true"
           secret_scanning_enabled: "true"
+          # gh-stackx intentionally invokes git via exec.Command for plumbing.
+          # go-command-execution is a false positive in this context.
+          go_disabled_rules: "go-command-execution"
