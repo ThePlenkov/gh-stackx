@@ -65,6 +65,16 @@ gh stackx bottom               # jump to the bottom layer
 gh stackx trunk                # jump to trunk
 ```
 
+### Version
+
+`gh-stackx` reports its repo and version from `manifest.yml`:
+
+```bash
+gh stackx --version
+gh stackx version
+gh stackx -v
+```
+
 ### Submit
 
 Push all branches and create or update PRs with the correct `base` and `head`.

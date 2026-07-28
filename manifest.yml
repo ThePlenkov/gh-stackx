@@ -1,6 +1,8 @@
 owner: ThePlenkov
 name: gh-stackx
 host: github.com
+# Bump this tag when cutting a new release. gh overwrites the manifest during
+# a release install, so this value is used for source/local builds only.
 tag: v1.1.0
 ispinned: false
 path: gh-stackx

@@ -684,6 +684,32 @@ func passthrough(args []string) {
 	ghRun(append([]string{"extension", "exec", "stack"}, args...)...)
 }
 
+// manifestVersion parses a gh extension manifest and returns the repo slug
+// (owner/name) and version tag. It falls back to the default repo slug when the
+// manifest does not contain owner and name.
+func manifestVersion(manifest []byte) (repo, version string) {
+	repo = "ThePlenkov/gh-stackx"
+	var owner, name, tag string
+	for _, line := range strings.Split(string(manifest), "\n") {
+		key, val, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(key) {
+		case "owner":
+			owner = strings.TrimSpace(val)
+		case "name":
+			name = strings.TrimSpace(val)
+		case "tag":
+			tag = strings.TrimSpace(val)
+		}
+	}
+	if owner != "" && name != "" {
+		repo = owner + "/" + name
+	}
+	return repo, tag
+}
+
 // printVersion prints the extension repo and version read from manifest.yml
 // located next to the executable, falling back to the bare repo name.
 func printVersion() {
@@ -691,27 +717,7 @@ func printVersion() {
 	if exe, err := os.Executable(); err == nil {
 		manifestPath := filepath.Join(filepath.Dir(exe), "manifest.yml")
 		if data, err := os.ReadFile(manifestPath); err == nil {
-			var owner, name, tag string
-			for _, line := range strings.Split(string(data), "\n") {
-				key, val, ok := strings.Cut(strings.TrimSpace(line), ":")
-				if !ok {
-					continue
-				}
-				switch strings.TrimSpace(key) {
-				case "owner":
-					owner = strings.TrimSpace(val)
-				case "name":
-					name = strings.TrimSpace(val)
-				case "tag":
-					tag = strings.TrimSpace(val)
-				}
-			}
-			if owner != "" && name != "" {
-				repo = owner + "/" + name
-			}
-			if tag != "" {
-				version = tag
-			}
+			repo, version = manifestVersion(data)
 		}
 	}
 	if version != "" {

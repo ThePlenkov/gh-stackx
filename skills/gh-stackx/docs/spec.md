@@ -14,7 +14,8 @@ This document describes the behavior of `gh-stackx` in enough detail that anothe
 | `submit` | `gh-stackx` | Push the stack, then create or update PRs bottom-up with the correct `--base` and `--head`. Draft by default. |
 | `sync` | `gh-stackx` | Run `gh stack sync`, then ensure every open PR has the correct base via `gh pr edit --base`. |
 | `merge` | `gh-stackx` | Merge PRs from top to bottom using `gh pr merge`. |
-| `version`, `--version`, `-v`, `view` (no args) | `github/gh-stack` | Pass through unchanged. |
+| `version`, `--version`, `-v` | `gh-stackx` | Print `ThePlenkov/gh-stackx <tag>` read from `manifest.yml` (falls back to repo only). |
+| `view` (no args) | `github/gh-stack` | Pass through unchanged. |
 
 ## Data model
 

@@ -58,7 +58,7 @@ gh stackx merge       # merges from the top down
 
 ## Usage
 
-All local/navigation commands pass through to `github/gh-stack`:
+Local/navigation commands pass through to `github/gh-stack`:
 
 ```bash
 gh stackx init
@@ -67,6 +67,13 @@ gh stackx view
 gh stackx up
 gh stackx down
 # ...
+```
+
+`version`, `--version`, and `-v` are handled by `gh-stackx` itself and print the repo and version from `manifest.yml`:
+
+```bash
+gh stackx --version
+# ThePlenkov/gh-stackx v1.1.0
 ```
 
 Remote operations are overridden:
