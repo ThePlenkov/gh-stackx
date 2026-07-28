@@ -7,9 +7,6 @@ triggers:
 allowed-tools:
   - read
   - bash
-  - write
-  - edit
-  - grep
 ---
 
 # gh-stackx
@@ -23,20 +20,17 @@ Use the `gh-stackx` `gh` extension to manage **stacked pull requests** on reposi
 - You need to keep PR bases correct as the stack is rebased or merged.
 - You want to merge a stack from the top down without manually editing PR bases.
 
+## Security notice
+
+`gh-stackx` is a convenience wrapper around the `github/gh-stack` and `ThePlenkov/gh-stackx` `gh` CLI extensions. These extensions run locally with the user's configured `gh` authentication. This skill does not collect, store, or forward GitHub credentials, and it does not install extensions or other skills automatically. Always review the source of any `gh` extension before installing it.
+
 ## Prerequisites
 
 - `gh` CLI installed and authenticated.
-- `github/gh-stack` extension installed for local stack operations:
+- `github/gh-stack` extension installed for local stack operations.
+- `gh-stackx` extension installed.
 
-  ```bash
-  gh extension install github/gh-stack
-  ```
-
-- `gh-stackx` installed:
-
-  ```bash
-  gh extension install ThePlenkov/gh-stackx
-  ```
+Do not run `gh extension install` automatically. Installation must be explicit, and the source repositories (`github/gh-stack` and `ThePlenkov/gh-stackx`) should be reviewed before granting `gh` credentials. See the repository README for installation steps.
 
 ## Core concepts
 
@@ -125,20 +119,6 @@ gh stackx -v
 - `gh stackx view` fails: ensure `github/gh-stack` is installed.
 - A PR has the wrong base: run `gh stackx sync`.
 - `submit` or `merge` stops with errors: fix the underlying `gh pr` issue, then re-run.
-
-## Install this skill
-
-With `npx skills` (Vercel skills):
-
-```bash
-npx skills add ThePlenkov/gh-stackx --skill gh-stackx
-```
-
-With `npx skill` (CodeBuddy):
-
-```bash
-SKILL_BASE_URL=https://github.com/ThePlenkov/gh-stackx/tree/main npx skill skills/gh-stackx
-```
 
 ## Further reading
 
