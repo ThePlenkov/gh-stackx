@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -332,5 +333,45 @@ func TestManifestVersion(t *testing.T) {
 					tt.input, gotRepo, gotVersion, tt.wantRepo, tt.wantVersion)
 			}
 		})
+	}
+}
+
+func TestDevinPluginManifest(t *testing.T) {
+	data, err := os.ReadFile(".devin-plugin/plugin.json")
+	if err != nil {
+		t.Fatalf("reading plugin.json: %v", err)
+	}
+	var plugin struct {
+		Name    string   `json:"name"`
+		Version string   `json:"version"`
+		Skills  []string `json:"skills"`
+	}
+	if err := json.Unmarshal(data, &plugin); err != nil {
+		t.Fatalf("parsing plugin.json: %v", err)
+	}
+	if plugin.Name != "gh-stackx" {
+		t.Errorf("name = %q, want %q", plugin.Name, "gh-stackx")
+	}
+	if plugin.Version == "" {
+		t.Errorf("version is empty")
+	}
+
+	manifest, err := os.ReadFile("manifest.yml")
+	if err != nil {
+		t.Fatalf("reading manifest.yml: %v", err)
+	}
+	_, manifestVersion := manifestVersion(manifest)
+	if strings.TrimPrefix(plugin.Version, "v") != strings.TrimPrefix(manifestVersion, "v") {
+		t.Errorf("plugin version %q does not match manifest.yml tag %q", plugin.Version, manifestVersion)
+	}
+
+	if len(plugin.Skills) == 0 {
+		t.Fatalf("skills field is empty")
+	}
+	for _, p := range plugin.Skills {
+		skillFile := filepath.Join(p, "SKILL.md")
+		if _, err := os.Stat(skillFile); err != nil {
+			t.Errorf("skill file %q not found: %v", skillFile, err)
+		}
 	}
 }
