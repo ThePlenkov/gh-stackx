@@ -189,3 +189,52 @@ func TestPrTitleAndBody(t *testing.T) {
 		t.Errorf("body = %q, want %q", body, wantBody)
 	}
 }
+
+func TestManifestVersion(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantRepo    string
+		wantVersion string
+	}{
+		{
+			name:        "full manifest",
+			input:       "owner: ThePlenkov\nname: gh-stackx\nhost: github.com\ntag: v1.1.0\nispinned: false\npath: gh-stackx\n",
+			wantRepo:    "ThePlenkov/gh-stackx",
+			wantVersion: "v1.1.0",
+		},
+		{
+			name:        "missing tag",
+			input:       "owner: ThePlenkov\nname: gh-stackx\n",
+			wantRepo:    "ThePlenkov/gh-stackx",
+			wantVersion: "",
+		},
+		{
+			name:        "missing owner/name falls back",
+			input:       "tag: v1.0.0\n",
+			wantRepo:    "ThePlenkov/gh-stackx",
+			wantVersion: "v1.0.0",
+		},
+		{
+			name:        "malformed lines ignored",
+			input:       "owner: ThePlenkov\nnot a key value pair\nname: gh-stackx\ntag: v1.2.3\n",
+			wantRepo:    "ThePlenkov/gh-stackx",
+			wantVersion: "v1.2.3",
+		},
+		{
+			name:        "empty manifest",
+			input:       "",
+			wantRepo:    "ThePlenkov/gh-stackx",
+			wantVersion: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotRepo, gotVersion := manifestVersion([]byte(tt.input))
+			if gotRepo != tt.wantRepo || gotVersion != tt.wantVersion {
+				t.Errorf("manifestVersion(%q) = (%q, %q), want (%q, %q)",
+					tt.input, gotRepo, gotVersion, tt.wantRepo, tt.wantVersion)
+			}
+		})
+	}
+}

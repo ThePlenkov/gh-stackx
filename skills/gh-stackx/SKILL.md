@@ -105,6 +105,14 @@ gh stackx bottom
 gh stackx trunk
 ```
 
+`gh-stackx` reports its own repo and version from `manifest.yml`:
+
+```bash
+gh stackx --version
+gh stackx version
+gh stackx -v
+```
+
 ## Important rules
 
 - Keep the working tree clean before `sync` or `merge`; rebase operations fail on uncommitted changes.
