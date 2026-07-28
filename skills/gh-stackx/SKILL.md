@@ -22,7 +22,7 @@ Use the `gh-stackx` `gh` extension to manage **stacked pull requests** on reposi
 
 ## Security notice
 
-`gh-stackx` is a convenience wrapper around the `github/gh-stack` and `ThePlenkov/gh-stackx` `gh` CLI extensions. These extensions run locally with the user's configured `gh` authentication. This skill does not collect, store, or forward GitHub credentials, and it does not install extensions or other skills automatically. Always review the source of any `gh` extension before installing it.
+`gh-stackx` is a convenience wrapper around the `github/gh-stack` `gh` CLI extension. It runs locally with the user's configured `gh` authentication. This skill does not collect, store, or forward GitHub credentials, and it does not install extensions or other skills automatically. Always review the source of any `gh` extension before installing it.
 
 ## Prerequisites
 
