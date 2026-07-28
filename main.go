@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -683,6 +684,43 @@ func passthrough(args []string) {
 	ghRun(append([]string{"extension", "exec", "stack"}, args...)...)
 }
 
+// printVersion prints the extension repo and version read from manifest.yml
+// located next to the executable, falling back to the bare repo name.
+func printVersion() {
+	repo, version := "ThePlenkov/gh-stackx", ""
+	if exe, err := os.Executable(); err == nil {
+		manifestPath := filepath.Join(filepath.Dir(exe), "manifest.yml")
+		if data, err := os.ReadFile(manifestPath); err == nil {
+			var owner, name, tag string
+			for _, line := range strings.Split(string(data), "\n") {
+				key, val, ok := strings.Cut(strings.TrimSpace(line), ":")
+				if !ok {
+					continue
+				}
+				switch strings.TrimSpace(key) {
+				case "owner":
+					owner = strings.TrimSpace(val)
+				case "name":
+					name = strings.TrimSpace(val)
+				case "tag":
+					tag = strings.TrimSpace(val)
+				}
+			}
+			if owner != "" && name != "" {
+				repo = owner + "/" + name
+			}
+			if tag != "" {
+				version = tag
+			}
+		}
+	}
+	if version != "" {
+		fmt.Printf("%s %s\n", repo, version)
+	} else {
+		fmt.Println(repo)
+	}
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		ghRun("extension", "exec", "stack")
@@ -696,8 +734,10 @@ func main() {
 		cmdSync(os.Args[2:])
 	case "merge":
 		cmdMerge(os.Args[2:])
-	case "view", "version", "--version", "-v":
+	case "view":
 		passthrough(os.Args[1:])
+	case "version", "--version", "-v":
+		printVersion()
 	default:
 		passthrough(os.Args[1:])
 	}
