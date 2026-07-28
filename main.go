@@ -20,6 +20,11 @@ func init() {
 	os.Setenv("CLICOLOR", "0")
 }
 
+const (
+	defaultGitHubHost    = "github.com"
+	defaultGitHubBaseURL = "https://github.com/"
+)
+
 var (
 	ownerRE = regexp.MustCompile(`^[A-Za-z0-9](?:-?[A-Za-z0-9]+)*$`)
 	repoRE  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -270,7 +275,7 @@ func parseGitRemote(raw string) (host, owner, repo string, err error) {
 var knownHostCache = map[string]bool{}
 
 func isKnownHost(host string) bool {
-	if host == "" || strings.EqualFold(host, "github.com") {
+	if host == "" || strings.EqualFold(host, defaultGitHubHost) {
 		return true
 	}
 	if v, ok := knownHostCache[host]; ok {
@@ -307,7 +312,7 @@ func isOrgOwner(owner, host string) (bool, error) {
 	}
 	// /users/{owner} works for both user and organization accounts and returns a type field.
 	args := []string{"api"}
-	if host != "" && !strings.EqualFold(host, "github.com") {
+	if host != "" && !strings.EqualFold(host, defaultGitHubHost) {
 		args = append(args, "--hostname", host)
 	}
 	args = append(args, "users/"+url.PathEscape(owner), "--jq", ".type")
@@ -356,8 +361,8 @@ type branchPRInfo struct {
 
 // prURL returns a web URL for a pull request.
 func prURL(host, repo string, number int) string {
-	if host == "" || strings.EqualFold(host, "github.com") {
-		return fmt.Sprintf("https://github.com/%s/pull/%d", repo, number)
+	if host == "" || strings.EqualFold(host, defaultGitHubHost) {
+		return fmt.Sprintf("%s%s/pull/%d", defaultGitHubBaseURL, repo, number)
 	}
 	return fmt.Sprintf("https://%s/%s/pull/%d", host, repo, number)
 }
