@@ -1286,10 +1286,10 @@ func applySubmitConfig(cfg *Config, fs *pflag.FlagSet, open, draft, auto *bool, 
 	if cfg == nil {
 		return
 	}
-	if !fs.Changed("open") && cfg.Submit.Open != nil && !*draft {
+	if !fs.Changed("open") && !fs.Changed("draft") && cfg.Submit.Open != nil {
 		*open = *cfg.Submit.Open
 	}
-	if !fs.Changed("draft") && cfg.Submit.Draft != nil && !*open {
+	if !fs.Changed("draft") && !fs.Changed("open") && cfg.Submit.Draft != nil {
 		*draft = *cfg.Submit.Draft
 	}
 	if !fs.Changed("auto") && cfg.Submit.Auto != nil {
@@ -1311,10 +1311,10 @@ func applyMergeConfig(cfg *Config, fs *pflag.FlagSet, squash, rebase, noDelete, 
 	if cfg == nil {
 		return
 	}
-	if !fs.Changed("squash") && cfg.Merge.Squash != nil && !*rebase {
+	if !fs.Changed("squash") && !fs.Changed("rebase") && cfg.Merge.Squash != nil {
 		*squash = *cfg.Merge.Squash
 	}
-	if !fs.Changed("rebase") && cfg.Merge.Rebase != nil && !*squash {
+	if !fs.Changed("rebase") && !fs.Changed("squash") && cfg.Merge.Rebase != nil {
 		*rebase = *cfg.Merge.Rebase
 	}
 	if !fs.Changed("no-delete-branch") && cfg.Merge.NoDelete != nil {
