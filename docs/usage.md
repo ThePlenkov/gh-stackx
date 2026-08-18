@@ -111,6 +111,45 @@ gh stackx merge --no-delete-branch
 
 `--squash` and `--rebase` are mutually exclusive. The default is a merge commit.
 
+## Configuration
+
+`gh-stackx` reads configuration files in the following order and uses the first one found:
+
+1. `.gh-stackx.yaml` (or `.yml`, `.json`) in the current repository
+2. `~/.config/gh-stackx/config.yaml` (or `.yml`, `.json`)
+3. `~/.gh-stackx.yaml` (or `.yml`, `.json`)
+
+Initialize a local config file:
+
+```bash
+gh stackx config init
+```
+
+View the effective configuration:
+
+```bash
+gh stackx config
+```
+
+Read or write individual keys:
+
+```bash
+gh stackx config get submit.open
+gh stackx config set submit.open true
+gh stackx config set merge.squash true
+gh stackx config set submit.remote upstream
+```
+
+Supported keys:
+
+- `submit.open`, `submit.draft`, `submit.auto`, `submit.remote`
+- `submit.labels`, `submit.reviewers`, `submit.assignees`
+- `sync.remote`
+- `merge.squash`, `merge.rebase`, `merge.no-delete-branch`, `merge.admin`, `merge.auto`
+
+Boolean values accept `true`/`false`, `yes`/`no`, `1`/`0`, or `unset` to clear a value.
+Command-line flags always override config values.
+
 ## Title and body generation
 
 `gh stackx submit` generates PR titles from the first commit on each branch. If a branch has more than one commit, the first commit becomes the title and the remaining commit subjects are listed under a `### Commits` section.

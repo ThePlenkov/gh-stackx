@@ -11,9 +11,10 @@ This document describes the behavior of `gh-stackx` in enough detail that anothe
 | Command | Implemented by | Behavior |
 | --- | --- | --- |
 | `init`, `add`, `view`, `up`, `down`, `top`, `bottom`, `trunk`, `checkout` | `github/gh-stack` | Pass through unchanged. |
-| `submit` | `gh-stackx` | Push the stack, then create or update PRs bottom-up with the correct `--base` and `--head`. Draft by default. |
+| `config` | `gh-stackx` | Manage `.gh-stackx.{yaml,yml,json}` config. `config init` creates a local template; `config get/set` read and write individual keys. |
+| `submit` | `gh-stackx` | Push the stack, then create or update PRs bottom-up with the correct `--base` and `--head`. Draft by default unless config or `--open` says otherwise. |
 | `sync` | `gh-stackx` | Run `gh stack sync`, then ensure every open PR has the correct base via `gh pr edit --base`. |
-| `merge` | `gh-stackx` | Merge PRs from top to bottom using `gh pr merge`. |
+| `merge` | `gh-stackx` | Merge PRs from top to bottom using `gh pr merge`. Config or flags choose merge method, branch deletion, admin merge, and auto-merge. |
 | `version`, `--version`, `-v` | `gh-stackx` | Print `ThePlenkov/gh-stackx <tag>` read from `manifest.yml` (falls back to repo only). |
 | `view` (no args) | `github/gh-stack` | Pass through unchanged. |
 
@@ -37,9 +38,47 @@ type Branch struct {
     IsQueued    bool   `json:"isQueued"`
     NeedsRebase bool   `json:"needsRebase"`
 }
+
+type Config struct {
+    Submit SubmitConfig `json:"submit" yaml:"submit"`
+    Sync   SyncConfig   `json:"sync" yaml:"sync"`
+    Merge  MergeConfig  `json:"merge" yaml:"merge"`
+}
+
+type SubmitConfig struct {
+    Draft     *bool    `json:"draft,omitempty" yaml:"draft,omitempty"`
+    Open      *bool    `json:"open,omitempty" yaml:"open,omitempty"`
+    Auto      *bool    `json:"auto,omitempty" yaml:"auto,omitempty"`
+    Remote    string   `json:"remote,omitempty" yaml:"remote,omitempty"`
+    Labels    []string `json:"labels,omitempty" yaml:"labels,omitempty"`
+    Reviewers []string `json:"reviewers,omitempty" yaml:"reviewers,omitempty"`
+    Assignees []string `json:"assignees,omitempty" yaml:"assignees,omitempty"`
+}
+
+type SyncConfig struct {
+    Remote string `json:"remote,omitempty" yaml:"remote,omitempty"`
+}
+
+type MergeConfig struct {
+    Squash    *bool `json:"squash,omitempty" yaml:"squash,omitempty"`
+    Rebase    *bool `json:"rebase,omitempty" yaml:"rebase,omitempty"`
+    NoDelete  *bool `json:"no-delete-branch,omitempty" yaml:"no-delete-branch,omitempty"`
+    Admin     *bool `json:"admin,omitempty" yaml:"admin,omitempty"`
+    AutoMerge *bool `json:"auto,omitempty" yaml:"auto,omitempty"`
+}
 ```
 
 A `Branch.Base` is considered during `sync` and `merge`; the actual PR base is computed by `baseForBranch`, which returns `stack.Trunk` for the bottom layer and the previous branch name for all others.
+
+## Configuration
+
+`gh-stackx` searches for a config file in this order and uses the first one found:
+
+1. `.gh-stackx.{yaml,yml,json}` in the current working directory
+2. `~/.config/gh-stackx/config.{yaml,yml,json}`
+3. `~/.gh-stackx.{yaml,yml,json}`
+
+`cmdSubmit`, `cmdSync`, and `cmdMerge` load the effective config with `loadConfig` and apply values only for flags the user did not explicitly pass. CLI flags always win over config values. `submit` also appends configured `labels`, `reviewers`, and `assignees` to new `gh pr create` invocations.
 
 ## Remote resolution
 
@@ -91,6 +130,7 @@ Direct dependencies:
 
 - `github.com/cli/go-gh/v2` — `gh` API and command execution.
 - `github.com/spf13/pflag` — POSIX-style flags.
+- `gopkg.in/yaml.v3` — YAML config file parsing and writing.
 
 Indirect dependencies:
 

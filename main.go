@@ -13,6 +13,7 @@ import (
 
 	gh "github.com/cli/go-gh/v2"
 	"github.com/spf13/pflag"
+	"gopkg.in/yaml.v3"
 )
 
 func init() {
@@ -84,6 +85,34 @@ type Stack struct {
 	Trunk    string   `json:"trunk"`
 	Current  string   `json:"currentBranch"`
 	Branches []Branch `json:"branches"`
+}
+
+type Config struct {
+	Submit SubmitConfig `json:"submit" yaml:"submit"`
+	Sync   SyncConfig   `json:"sync" yaml:"sync"`
+	Merge  MergeConfig  `json:"merge" yaml:"merge"`
+}
+
+type SubmitConfig struct {
+	Draft     *bool    `json:"draft,omitempty" yaml:"draft,omitempty"`
+	Open      *bool    `json:"open,omitempty" yaml:"open,omitempty"`
+	Auto      *bool    `json:"auto,omitempty" yaml:"auto,omitempty"`
+	Remote    string   `json:"remote,omitempty" yaml:"remote,omitempty"`
+	Labels    []string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	Reviewers []string `json:"reviewers,omitempty" yaml:"reviewers,omitempty"`
+	Assignees []string `json:"assignees,omitempty" yaml:"assignees,omitempty"`
+}
+
+type SyncConfig struct {
+	Remote string `json:"remote,omitempty" yaml:"remote,omitempty"`
+}
+
+type MergeConfig struct {
+	Squash    *bool `json:"squash,omitempty" yaml:"squash,omitempty"`
+	Rebase    *bool `json:"rebase,omitempty" yaml:"rebase,omitempty"`
+	NoDelete  *bool `json:"no-delete-branch,omitempty" yaml:"no-delete-branch,omitempty"`
+	Admin     *bool `json:"admin,omitempty" yaml:"admin,omitempty"`
+	AutoMerge *bool `json:"auto,omitempty" yaml:"auto,omitempty"`
 }
 
 func ghStackView() Stack {
@@ -466,6 +495,14 @@ func cmdSubmit(args []string) {
 	remote := fs.String("remote", "", "Remote to push to.")
 	fs.Parse(args)
 
+	cfg, _, err := loadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+	applySubmitConfig(cfg, fs, open, draft, auto, remote)
+	extraArgs := submitCreateExtraArgs(cfg)
+
 	if *draft {
 		*open = false
 	}
@@ -629,6 +666,7 @@ func cmdSubmit(args []string) {
 				if !*open {
 					createArgs = append(createArgs, "--draft")
 				}
+				createArgs = append(createArgs, extraArgs...)
 				if err := runGhWithErr(createArgs...); err != nil {
 					fmt.Fprintf(os.Stderr, "Failed to create PR for %s: %v\n", br.Name, err)
 					errors++
@@ -684,6 +722,13 @@ func cmdSync(args []string) {
 	remote := fs.String("remote", "", "Remote to sync with.")
 	fs.Parse(args)
 
+	cfg, _, err := loadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+	applySyncConfig(cfg, fs, remote)
+
 	syncArgs := []string{"extension", "exec", "stack", "sync"}
 	if *remote != "" {
 		syncArgs = append(syncArgs, "--remote", *remote)
@@ -732,6 +777,13 @@ func cmdMerge(args []string) {
 	admin := fs.Bool("admin", false, "Use admin privileges to merge.")
 	auto := fs.Bool("auto", false, "Enable auto-merge instead of merging immediately.")
 	fs.Parse(args)
+
+	cfg, _, err := loadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+	applyMergeConfig(cfg, fs, squash, rebase, noDelete, admin, auto)
 
 	if *squash && *rebase {
 		fmt.Fprintln(os.Stderr, "error: --squash and --rebase are mutually exclusive")
@@ -853,6 +905,429 @@ func printVersion() {
 	}
 }
 
+const defaultConfigYAML = `# gh-stackx default configuration
+# Uncomment and edit the values you want to use as defaults.
+
+submit:
+  # open: true
+  # draft: false
+  # auto: true
+  # remote: origin
+  # labels:
+  #   - enhancement
+  # reviewers:
+  #   - user1
+  # assignees:
+  #   - user1
+
+sync:
+  # remote: origin
+
+merge:
+  # squash: false
+  # rebase: false
+  # no-delete-branch: false
+  # admin: false
+  # auto: false
+`
+
+func configSearchPaths() []string {
+	paths := []string{
+		".gh-stackx.yaml",
+		".gh-stackx.yml",
+		".gh-stackx.json",
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths,
+			filepath.Join(home, ".config", "gh-stackx", "config.yaml"),
+			filepath.Join(home, ".config", "gh-stackx", "config.yml"),
+			filepath.Join(home, ".config", "gh-stackx", "config.json"),
+			filepath.Join(home, ".gh-stackx.yaml"),
+			filepath.Join(home, ".gh-stackx.yml"),
+			filepath.Join(home, ".gh-stackx.json"),
+		)
+	}
+	return paths
+}
+
+func loadConfig() (*Config, string, error) {
+	for _, p := range configSearchPaths() {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, "", err
+		}
+		var cfg Config
+		ext := strings.ToLower(filepath.Ext(p))
+		switch ext {
+		case ".yaml", ".yml":
+			if err := yaml.Unmarshal(data, &cfg); err != nil {
+				return nil, p, err
+			}
+		case ".json":
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				return nil, p, err
+			}
+		default:
+			if err := yaml.Unmarshal(data, &cfg); err != nil {
+				return nil, p, err
+			}
+		}
+		return &cfg, p, nil
+	}
+	return &Config{}, "", nil
+}
+
+func marshalConfig(cfg *Config, path string) ([]byte, error) {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".yaml", ".yml":
+		return yaml.Marshal(cfg)
+	case ".json":
+		data, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			return nil, err
+		}
+		return append(data, '\n'), nil
+	default:
+		return yaml.Marshal(cfg)
+	}
+}
+
+func writeConfig(path string, cfg *Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	data, err := marshalConfig(cfg, path)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+func parseBoolPtr(s string) (*bool, error) {
+	switch strings.ToLower(s) {
+	case "true", "1", "yes", "on":
+		t := true
+		return &t, nil
+	case "false", "0", "no", "off":
+		f := false
+		return &f, nil
+	case "unset", "null", "none", "":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("invalid boolean value %q", s)
+	}
+}
+
+func setConfigValue(cfg *Config, key, value string) error {
+	parts := strings.SplitN(key, ".", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("config key must be in the form <section>.<field>, got %q", key)
+	}
+	section, field := parts[0], parts[1]
+	switch section {
+	case "submit":
+		switch field {
+		case "open", "draft", "auto":
+			v, err := parseBoolPtr(value)
+			if err != nil {
+				return err
+			}
+			switch field {
+			case "open":
+				cfg.Submit.Open = v
+			case "draft":
+				cfg.Submit.Draft = v
+			case "auto":
+				cfg.Submit.Auto = v
+			}
+		case "remote":
+			cfg.Submit.Remote = value
+		case "labels":
+			if value == "" {
+				cfg.Submit.Labels = nil
+			} else {
+				cfg.Submit.Labels = strings.Split(value, ",")
+			}
+		case "reviewers":
+			if value == "" {
+				cfg.Submit.Reviewers = nil
+			} else {
+				cfg.Submit.Reviewers = strings.Split(value, ",")
+			}
+		case "assignees":
+			if value == "" {
+				cfg.Submit.Assignees = nil
+			} else {
+				cfg.Submit.Assignees = strings.Split(value, ",")
+			}
+		default:
+			return fmt.Errorf("unknown submit config key %q", field)
+		}
+	case "sync":
+		if field != "remote" {
+			return fmt.Errorf("unknown sync config key %q", field)
+		}
+		cfg.Sync.Remote = value
+	case "merge":
+		switch field {
+		case "squash":
+			v, err := parseBoolPtr(value)
+			if err != nil {
+				return err
+			}
+			cfg.Merge.Squash = v
+		case "rebase":
+			v, err := parseBoolPtr(value)
+			if err != nil {
+				return err
+			}
+			cfg.Merge.Rebase = v
+		case "no-delete-branch":
+			v, err := parseBoolPtr(value)
+			if err != nil {
+				return err
+			}
+			cfg.Merge.NoDelete = v
+		case "admin":
+			v, err := parseBoolPtr(value)
+			if err != nil {
+				return err
+			}
+			cfg.Merge.Admin = v
+		case "auto":
+			v, err := parseBoolPtr(value)
+			if err != nil {
+				return err
+			}
+			cfg.Merge.AutoMerge = v
+		default:
+			return fmt.Errorf("unknown merge config key %q", field)
+		}
+	default:
+		return fmt.Errorf("unknown config section %q", section)
+	}
+	return nil
+}
+
+func getConfigValue(cfg *Config, key string) (string, bool) {
+	parts := strings.SplitN(key, ".", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+	section, field := parts[0], parts[1]
+	boolStr := func(v *bool) string {
+		if v == nil {
+			return "(not set)"
+		}
+		return strconv.FormatBool(*v)
+	}
+	switch section {
+	case "submit":
+		switch field {
+		case "open":
+			return boolStr(cfg.Submit.Open), true
+		case "draft":
+			return boolStr(cfg.Submit.Draft), true
+		case "auto":
+			return boolStr(cfg.Submit.Auto), true
+		case "remote":
+			return cfg.Submit.Remote, true
+		case "labels":
+			return strings.Join(cfg.Submit.Labels, ","), true
+		case "reviewers":
+			return strings.Join(cfg.Submit.Reviewers, ","), true
+		case "assignees":
+			return strings.Join(cfg.Submit.Assignees, ","), true
+		}
+	case "sync":
+		if field == "remote" {
+			return cfg.Sync.Remote, true
+		}
+	case "merge":
+		switch field {
+		case "squash":
+			return boolStr(cfg.Merge.Squash), true
+		case "rebase":
+			return boolStr(cfg.Merge.Rebase), true
+		case "no-delete-branch":
+			return boolStr(cfg.Merge.NoDelete), true
+		case "admin":
+			return boolStr(cfg.Merge.Admin), true
+		case "auto":
+			return boolStr(cfg.Merge.AutoMerge), true
+		}
+	}
+	return "", false
+}
+
+func cmdConfig(args []string) {
+	if len(args) == 0 {
+		cfg, path, err := loadConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+			os.Exit(1)
+		}
+		cmdConfigShow(cfg, path)
+		return
+	}
+	switch args[0] {
+	case "init":
+		cmdConfigInit(args[1:])
+	case "get":
+		cfg, _, err := loadConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+			os.Exit(1)
+		}
+		cmdConfigGet(args[1:], cfg)
+	case "set":
+		cmdConfigSet(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown config subcommand %q\n", args[0])
+		fmt.Fprintln(os.Stderr, "usage: gh stackx config [init|get|set]")
+		os.Exit(1)
+	}
+}
+
+func cmdConfigInit(args []string) {
+	fs := pflag.NewFlagSet("config init", pflag.ExitOnError)
+	force := fs.Bool("force", false, "Overwrite an existing config file.")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to parse flags: %v\n", err)
+		os.Exit(1)
+	}
+	const defaultConfigPath = ".gh-stackx.yaml"
+	if _, err := os.Stat(defaultConfigPath); err == nil && !*force {
+		fmt.Fprintf(os.Stderr, "error: %s already exists; use --force to overwrite\n", defaultConfigPath)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(defaultConfigPath, []byte(defaultConfigYAML), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to write %s: %v\n", defaultConfigPath, err)
+		os.Exit(1)
+	}
+	fmt.Println("Created", defaultConfigPath)
+}
+
+func cmdConfigShow(cfg *Config, path string) {
+	if path == "" {
+		fmt.Println("# No gh-stackx config file found; using CLI defaults only.")
+	} else {
+		fmt.Printf("# Effective config from %s\n", path)
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to marshal config: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Print(string(data))
+}
+
+func cmdConfigGet(args []string, cfg *Config) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: gh stackx config get <key>")
+		os.Exit(1)
+	}
+	key := args[0]
+	if value, ok := getConfigValue(cfg, key); ok {
+		fmt.Println(value)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "unknown config key %q\n", key)
+	os.Exit(1)
+}
+
+func cmdConfigSet(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: gh stackx config set <key> <value>")
+		os.Exit(1)
+	}
+	key, value := args[0], args[1]
+	cfg, path, err := loadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+	if path == "" {
+		path = ".gh-stackx.yaml"
+	}
+	if err := setConfigValue(cfg, key, value); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to set config key %q: %v\n", key, err)
+		os.Exit(1)
+	}
+	if err := writeConfig(path, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to write %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	fmt.Printf("Set %s = %s in %s\n", key, value, path)
+}
+
+func submitCreateExtraArgs(cfg *Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	var args []string
+	for _, l := range cfg.Submit.Labels {
+		args = append(args, "--label", l)
+	}
+	for _, r := range cfg.Submit.Reviewers {
+		args = append(args, "--reviewer", r)
+	}
+	for _, a := range cfg.Submit.Assignees {
+		args = append(args, "--assignee", a)
+	}
+	return args
+}
+
+func applySubmitConfig(cfg *Config, fs *pflag.FlagSet, open, draft, auto *bool, remote *string) {
+	if cfg == nil {
+		return
+	}
+	if !fs.Changed("open") && !fs.Changed("draft") && cfg.Submit.Open != nil {
+		*open = *cfg.Submit.Open
+	}
+	if !fs.Changed("draft") && !fs.Changed("open") && cfg.Submit.Draft != nil {
+		*draft = *cfg.Submit.Draft
+	}
+	if !fs.Changed("auto") && cfg.Submit.Auto != nil {
+		*auto = *cfg.Submit.Auto
+	}
+	if !fs.Changed("remote") && cfg.Submit.Remote != "" {
+		*remote = cfg.Submit.Remote
+	}
+}
+
+func applySyncConfig(cfg *Config, fs *pflag.FlagSet, remote *string) {
+	if cfg == nil || fs.Changed("remote") || cfg.Sync.Remote == "" {
+		return
+	}
+	*remote = cfg.Sync.Remote
+}
+
+func applyMergeConfig(cfg *Config, fs *pflag.FlagSet, squash, rebase, noDelete, admin, auto *bool) {
+	if cfg == nil {
+		return
+	}
+	if !fs.Changed("squash") && !fs.Changed("rebase") && cfg.Merge.Squash != nil {
+		*squash = *cfg.Merge.Squash
+	}
+	if !fs.Changed("rebase") && !fs.Changed("squash") && cfg.Merge.Rebase != nil {
+		*rebase = *cfg.Merge.Rebase
+	}
+	if !fs.Changed("no-delete-branch") && cfg.Merge.NoDelete != nil {
+		*noDelete = *cfg.Merge.NoDelete
+	}
+	if !fs.Changed("admin") && cfg.Merge.Admin != nil {
+		*admin = *cfg.Merge.Admin
+	}
+	if !fs.Changed("auto") && cfg.Merge.AutoMerge != nil {
+		*auto = *cfg.Merge.AutoMerge
+	}
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		ghRun("extension", "exec", "stack")
@@ -866,6 +1341,8 @@ func main() {
 		cmdSync(os.Args[2:])
 	case "merge":
 		cmdMerge(os.Args[2:])
+	case "config":
+		cmdConfig(os.Args[2:])
 	case "view":
 		passthrough(os.Args[1:])
 	case "version", "--version", "-v":

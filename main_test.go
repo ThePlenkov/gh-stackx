@@ -6,8 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/spf13/pflag"
 )
 
 func TestIsValidGitHubOwner(t *testing.T) {
@@ -372,6 +375,296 @@ func TestDevinPluginManifest(t *testing.T) {
 		skillFile := filepath.Join(p, "SKILL.md")
 		if _, err := os.Stat(skillFile); err != nil {
 			t.Errorf("skill file %q not found: %v", skillFile, err)
+		}
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+func TestParseBoolPtr(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    *bool
+		wantErr bool
+	}{
+		{"true", "true", boolPtr(true), false},
+		{"yes", "yes", boolPtr(true), false},
+		{"1", "1", boolPtr(true), false},
+		{"false", "false", boolPtr(false), false},
+		{"no", "no", boolPtr(false), false},
+		{"0", "0", boolPtr(false), false},
+		{"unset", "unset", nil, false},
+		{"empty", "", nil, false},
+		{"invalid", "maybe", nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseBoolPtr(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseBoolPtr(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+			if tt.want == nil {
+				if got != nil {
+					t.Errorf("parseBoolPtr(%q) = %v, want nil", tt.input, *got)
+				}
+				return
+			}
+			if got == nil || *got != *tt.want {
+				t.Errorf("parseBoolPtr(%q) = %v, want %v", tt.input, got, *tt.want)
+			}
+		})
+	}
+}
+
+func TestSetAndGetConfigValue(t *testing.T) {
+	cfg := &Config{}
+	if err := setConfigValue(cfg, "submit.open", "true"); err != nil {
+		t.Fatalf("setConfigValue submit.open: %v", err)
+	}
+	if err := setConfigValue(cfg, "merge.squash", "yes"); err != nil {
+		t.Fatalf("setConfigValue merge.squash: %v", err)
+	}
+	if err := setConfigValue(cfg, "submit.labels", "bug,feature"); err != nil {
+		t.Fatalf("setConfigValue submit.labels: %v", err)
+	}
+
+	if cfg.Submit.Open == nil || !*cfg.Submit.Open {
+		t.Errorf("Submit.Open not set to true")
+	}
+	if cfg.Merge.Squash == nil || !*cfg.Merge.Squash {
+		t.Errorf("Merge.Squash not set to true")
+	}
+	if !slices.Equal(cfg.Submit.Labels, []string{"bug", "feature"}) {
+		t.Errorf("Submit.Labels = %v, want [bug feature]", cfg.Submit.Labels)
+	}
+
+	got, ok := getConfigValue(cfg, "submit.open")
+	if !ok || got != "true" {
+		t.Errorf("getConfigValue(submit.open) = (%q, %v), want (true, true)", got, ok)
+	}
+	got, ok = getConfigValue(cfg, "submit.labels")
+	if !ok || got != "bug,feature" {
+		t.Errorf("getConfigValue(submit.labels) = (%q, %v), want (bug,feature, true)", got, ok)
+	}
+	got, ok = getConfigValue(cfg, "submit.missing")
+	if ok {
+		t.Errorf("getConfigValue(submit.missing) unexpectedly found")
+	}
+
+	if err := setConfigValue(cfg, "submit.open", "unset"); err != nil {
+		t.Fatalf("setConfigValue submit.open unset: %v", err)
+	}
+	if cfg.Submit.Open != nil {
+		t.Errorf("Submit.Open = %v, want nil", *cfg.Submit.Open)
+	}
+}
+
+func TestLoadConfigYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Chdir(tmpDir)
+
+	content := `submit:
+  draft: true
+  remote: upstream
+merge:
+  squash: true
+`
+	if err := os.WriteFile(".gh-stackx.yaml", []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, path, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig() error = %v", err)
+	}
+	if path != ".gh-stackx.yaml" {
+		t.Errorf("loadConfig() path = %q, want .gh-stackx.yaml", path)
+	}
+	if cfg.Submit.Draft == nil || !*cfg.Submit.Draft {
+		t.Errorf("Submit.Draft = %v, want true", cfg.Submit.Draft)
+	}
+	if cfg.Submit.Remote != "upstream" {
+		t.Errorf("Submit.Remote = %q, want upstream", cfg.Submit.Remote)
+	}
+	if cfg.Merge.Squash == nil || !*cfg.Merge.Squash {
+		t.Errorf("Merge.Squash = %v, want true", cfg.Merge.Squash)
+	}
+}
+
+func TestLoadConfigJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Chdir(tmpDir)
+
+	content := `{"sync":{"remote":"origin"}}`
+	if err := os.WriteFile(".gh-stackx.json", []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, path, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig() error = %v", err)
+	}
+	if path != ".gh-stackx.json" {
+		t.Errorf("loadConfig() path = %q, want .gh-stackx.json", path)
+	}
+	if cfg.Sync.Remote != "origin" {
+		t.Errorf("Sync.Remote = %q, want origin", cfg.Sync.Remote)
+	}
+}
+
+func TestWriteAndLoadConfigYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Chdir(tmpDir)
+
+	cfg := &Config{
+		Submit: SubmitConfig{
+			Open:   boolPtr(true),
+			Remote: "upstream",
+			Labels: []string{"enhancement"},
+		},
+		Merge: MergeConfig{
+			Squash: boolPtr(false),
+		},
+	}
+	if err := writeConfig(".gh-stackx.yaml", cfg); err != nil {
+		t.Fatalf("writeConfig error = %v", err)
+	}
+
+	loaded, path, err := loadConfig()
+	if err != nil {
+		t.Fatalf("loadConfig() error = %v", err)
+	}
+	if path != ".gh-stackx.yaml" {
+		t.Errorf("loadConfig() path = %q, want .gh-stackx.yaml", path)
+	}
+	if loaded.Submit.Open == nil || !*loaded.Submit.Open {
+		t.Errorf("loaded Submit.Open = %v, want true", loaded.Submit.Open)
+	}
+	if loaded.Submit.Remote != "upstream" {
+		t.Errorf("loaded Submit.Remote = %q, want upstream", loaded.Submit.Remote)
+	}
+	if !slices.Equal(loaded.Submit.Labels, []string{"enhancement"}) {
+		t.Errorf("loaded Submit.Labels = %v, want [enhancement]", loaded.Submit.Labels)
+	}
+	if loaded.Merge.Squash == nil || *loaded.Merge.Squash {
+		t.Errorf("loaded Merge.Squash = %v, want false", loaded.Merge.Squash)
+	}
+}
+
+func TestApplySubmitConfig(t *testing.T) {
+	cfg := &Config{
+		Submit: SubmitConfig{
+			Open:   boolPtr(true),
+			Auto:   boolPtr(false),
+			Remote: "upstream",
+		},
+	}
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	open := fs.Bool("open", false, "")
+	draft := fs.Bool("draft", false, "")
+	auto := fs.Bool("auto", true, "")
+	remote := fs.String("remote", "", "")
+	if err := fs.Parse([]string{}); err != nil {
+		t.Fatal(err)
+	}
+
+	applySubmitConfig(cfg, fs, open, draft, auto, remote)
+	if !*open {
+		t.Errorf("open = %v, want true", *open)
+	}
+	if *draft {
+		t.Errorf("draft = %v, want false", *draft)
+	}
+	if *auto {
+		t.Errorf("auto = %v, want false", *auto)
+	}
+	if *remote != "upstream" {
+		t.Errorf("remote = %q, want upstream", *remote)
+	}
+
+	// Flag overrides config.
+	fs2 := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	open2 := fs2.Bool("open", false, "")
+	draft2 := fs2.Bool("draft", false, "")
+	auto2 := fs2.Bool("auto", true, "")
+	remote2 := fs2.String("remote", "", "")
+	if err := fs2.Parse([]string{"--draft"}); err != nil {
+		t.Fatal(err)
+	}
+	applySubmitConfig(cfg, fs2, open2, draft2, auto2, remote2)
+	if !*draft2 {
+		t.Errorf("draft = %v, want true when --draft is passed", *draft2)
+	}
+	if *open2 {
+		t.Errorf("open = %v, want false when --draft is passed", *open2)
+	}
+}
+
+func TestApplyMergeConfig(t *testing.T) {
+	cfg := &Config{
+		Merge: MergeConfig{
+			Squash:   boolPtr(true),
+			NoDelete: boolPtr(true),
+		},
+	}
+	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	squash := fs.Bool("squash", false, "")
+	rebase := fs.Bool("rebase", false, "")
+	noDelete := fs.Bool("no-delete-branch", false, "")
+	admin := fs.Bool("admin", false, "")
+	auto := fs.Bool("auto", false, "")
+	if err := fs.Parse([]string{}); err != nil {
+		t.Fatal(err)
+	}
+
+	applyMergeConfig(cfg, fs, squash, rebase, noDelete, admin, auto)
+	if !*squash {
+		t.Errorf("squash = %v, want true", *squash)
+	}
+	if *rebase {
+		t.Errorf("rebase = %v, want false", *rebase)
+	}
+	if !*noDelete {
+		t.Errorf("noDelete = %v, want true", *noDelete)
+	}
+
+	// Explicit --rebase overrides configured squash.
+	fs2 := pflag.NewFlagSet("test", pflag.ContinueOnError)
+	squash2 := fs2.Bool("squash", false, "")
+	rebase2 := fs2.Bool("rebase", false, "")
+	noDelete2 := fs2.Bool("no-delete-branch", false, "")
+	admin2 := fs2.Bool("admin", false, "")
+	auto2 := fs2.Bool("auto", false, "")
+	if err := fs2.Parse([]string{"--rebase"}); err != nil {
+		t.Fatal(err)
+	}
+	applyMergeConfig(cfg, fs2, squash2, rebase2, noDelete2, admin2, auto2)
+	if *squash2 {
+		t.Errorf("squash = %v, want false when --rebase is passed", *squash2)
+	}
+	if !*rebase2 {
+		t.Errorf("rebase = %v, want true when --rebase is passed", *rebase2)
+	}
+}
+
+func TestCmdConfigInit(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Chdir(tmpDir)
+
+	cmdConfigInit([]string{})
+
+	data, err := os.ReadFile(".gh-stackx.yaml")
+	if err != nil {
+		t.Fatalf("reading created config: %v", err)
+	}
+	content := string(data)
+	for _, want := range []string{"submit:", "merge:", "# remote:"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("created config missing %q\n%s", want, content)
 		}
 	}
 }

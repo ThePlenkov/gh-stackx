@@ -1,6 +1,6 @@
 ---
 name: gh-stackx
-description: Use the gh-stackx gh extension to submit, sync, and merge stacked pull requests when the GitHub Stacked PRs API is unavailable.
+description: Use the gh-stackx gh extension to submit, sync, and merge stacked pull requests. It wraps github/gh-stack for local operations and adds config-driven defaults for the remote workflow.
 triggers:
   - user
   - model
@@ -19,6 +19,7 @@ Use the `gh-stackx` `gh` extension to manage **stacked pull requests** on reposi
 - `gh stack submit` fails with `⚠ Stacked PRs are not enabled for this repository`.
 - You need to keep PR bases correct as the stack is rebased or merged.
 - You want to merge a stack from the top down without manually editing PR bases.
+- You want default flags for `submit`, `sync`, and `merge` stored in a config file.
 
 ## Security notice
 
@@ -58,6 +59,17 @@ gh stackx add feature/ui
 # work and commit
 ```
 
+### Configuration
+
+`gh-stackx` reads `.gh-stackx.{yaml,yml,json}` or `~/.config/gh-stackx/config.{yaml,yml,json}`.
+
+```bash
+gh stackx config init
+gh stackx config get submit.open
+gh stackx config set submit.open true
+gh stackx config set merge.squash true
+```
+
 ### Submit PRs
 
 ```bash
@@ -65,7 +77,7 @@ gh stackx submit       # drafts
 gh stackx submit --open
 ```
 
-`submit` pushes all branches and creates/updates PRs bottom-up with the correct `--base` and `--head`. Each PR body includes a `## Stack` GFM table showing the full stack from top to trunk.
+`submit` pushes all branches and creates/updates PRs bottom-up with the correct `--base` and `--head`. Each PR body includes a `## Stack` GFM table showing the full stack from top to trunk. Config defaults apply when no equivalent flag is passed.
 
 ### Sync after trunk or parent PR changes
 
@@ -74,7 +86,7 @@ gh stackx sync
 gh stackx sync --remote upstream
 ```
 
-`sync` runs `gh stack sync` and then updates every open PR base with `gh pr edit --base`.
+`sync` runs `gh stack sync` and then updates every open PR base with `gh pr edit --base`. A `sync.remote` config value is used when `--remote` is omitted.
 
 ### Merge top-down
 
@@ -84,7 +96,7 @@ gh stackx merge --squash
 gh stackx merge --rebase
 ```
 
-`merge` starts at the top of the stack and merges each open PR with `gh pr merge`.
+`merge` starts at the top of the stack and merges each open PR with `gh pr merge`. Configured `merge.squash`, `merge.rebase`, `merge.no-delete-branch`, `merge.admin`, and `merge.auto` are used as defaults.
 
 ## Local navigation
 

@@ -58,6 +58,13 @@ gh stackx merge       # merges from the top down
 
 ## Usage
 
+`gh-stackx` supports a config file for default flags. See `docs/usage.md` for details, or run:
+
+```bash
+gh stackx config init
+gh stackx config get submit.open
+```
+
 Local/navigation commands pass through to `github/gh-stack`:
 
 ```bash
